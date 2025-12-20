@@ -1,0 +1,15 @@
+[package]
+name = "systema-client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+scraper.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+utilites.workspace = true
+encoding.workspace = true
+regex.workspace = true
