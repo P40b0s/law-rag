@@ -5,7 +5,9 @@ edition = "2024"
 
 [dependencies]
 scraper.workspace = true
+html5ever.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true
@@ -13,3 +15,5 @@ tracing-subscriber.workspace = true
 utilites.workspace = true
 encoding.workspace = true
 regex.workspace = true
+rangemap.workspace = true
+rand.workspace = true

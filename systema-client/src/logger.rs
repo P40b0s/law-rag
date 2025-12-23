@@ -6,7 +6,7 @@ pub fn init() -> bool {
         // {
         //     "law-rag=debug".into()
         // }))
-        .with_max_level(Level::INFO)
+        .with_max_level(Level::DEBUG)
         .with_line_number(true)
         .with_file(true)
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE);

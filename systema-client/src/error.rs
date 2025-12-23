@@ -12,10 +12,14 @@ pub enum Error
     // }
     #[error("Systema api error: `{0}`")]
     ApiError(String),
+    #[error("Content structure error: `{0}`")]
+    ContentError(String),
     #[error(transparent)]
     UtilitesError(#[from] utilites::error::Error),
     #[error("parse htmp error: `{0}`")]
-    ScraperError(String)
+    ScraperError(String),
+    #[error(transparent)]
+    SerdeJsonError(#[from] serde_json::error::Error),
 }
 
 impl Error

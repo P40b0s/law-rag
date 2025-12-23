@@ -10,7 +10,6 @@ candle-transformers.workspace = true
 tokenizers.workspace = true
 scraper.workspace = true
 serde.workspace = true
-snafu.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true
