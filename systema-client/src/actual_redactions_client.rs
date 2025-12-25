@@ -12,10 +12,7 @@ use crate::{Error, Result, encoding::encode, models::{Content, Contents, Redacti
 
 //static CLEAR_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\s?id=["]p\d{1,}["]"#).unwrap());
 static CLEAR_ED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\s?class=["]ed[x]?["]"#).unwrap());
-static BASE_URL: &str = "http://actual.pravo.gov.ru";
 static API_EBPI_URL: &str = "http://actual.pravo.gov.ru:8000/api/ebpi";
-//const ACTUAL_BACKEND_URL: &str = "http://95.173.157.133:8000";
-const ACTUAL_EBPI_PATH: &str = "/api/ebpi";
 #[derive(Serialize, Debug, Copy, Clone)]
 /// Какой то тип переменной для получения редакции документа из конкретного источника  
 /// (пишу как написанго в инструкии к исходникам, хз что это)
@@ -47,12 +44,7 @@ pub struct ActualRedactionsClient
 }
 impl ActualRedactionsClient
 {
-    fn base_client() -> HyperClient
-    {
-        HyperClient::new_with_timeout(BASE_URL.parse().unwrap(), 150, 950, 10)
-            .with_headers(Self::headers())
-    }
-    fn ipbpi_client() -> HyperClient
+    fn client() -> HyperClient
     {
         HyperClient::new_with_timeout(API_EBPI_URL.parse().unwrap(), 150, 950, 10)
             .with_headers(Self::headers())
@@ -97,7 +89,7 @@ impl ActualRedactionsClient
     }
     async fn get_redactions(params: String) -> Result<Vec<super::models::ExtendedRedaction>>
     {
-        let client = Self::ipbpi_client().with_path("redactions");
+        let client = Self::client().with_path("redactions");
         info!("processing request: {:?} with params: {:?}", client.get_uri(), &[("bpa", "ebpi"), ("t", &params)]);
         let result = client.get_with_params(&[("bpa", "ebpi"),("t", &params)]).await?;
         let value = Self::code_error_check(result)?;
@@ -112,7 +104,7 @@ impl ActualRedactionsClient
     }
     async fn get_contents(redaction_id: &u32) -> Result<super::models::Contents>
     {
-        let client = Self::ipbpi_client().with_path("getcontent");
+        let client = Self::client().with_path("getcontent");
         info!("processing request: {:?} with params: {:?}", client.get_uri(), &[("bpa", "ebpi"), ("rdk", &redaction_id.to_string())]);
         let result = client.get_with_params(&[("bpa", "ebpi"),("rdk", &redaction_id.to_string())]).await?;
         let value = Self::code_error_check(result)?;
@@ -135,7 +127,7 @@ impl ActualRedactionsClient
     // }
     pub async fn get_document_html(redaction_id: &u32, source: RedactionTtl) -> Result<String>
     {
-        let client = Self::ipbpi_client().with_path("redtext");
+        let client = Self::client().with_path("redtext");
         let result = client.get_with_params(
         &[
             ("bpa", "ebpi"),
@@ -197,7 +189,7 @@ impl ActualRedactionsClient
     {
         let v = SearchAttributes::get_search_attributes_vec(date_from, date_to, kinds, pages, number);
         let attrs = serde_json::to_string(&v).unwrap();
-        let client = Self::ipbpi_client().with_path("attrsearch");
+        let client = Self::client().with_path("attrsearch");
         info!("processing request: {:?} with params: {:?}", client.get_uri(), &[("bpa", "ebpi"), ("q", &attrs)]);
         let response = client.get_with_params(&[("bpa", "ebpi"), ("q", &attrs)]).await?;
        
@@ -234,7 +226,7 @@ impl ActualRedactionsClient
         Ok(doc)
     }
 
-    pub async fn get_document(date: Date, number: &str) -> Result<(Html, Contents)>
+    pub async fn get_document(date: Date, number: &str) -> Result<DocumentResponse>
     {
         let cards = super::ActualRedactionsClient::search_default(date, number).await?;
         let hash = cards.hash;
@@ -244,8 +236,31 @@ impl ActualRedactionsClient
         let contents = super::ActualRedactionsClient::get_contents(&actual.id).await?;
         let document = super::ActualRedactionsClient::get_clear_document_html(&actual.id, RedactionTtl::Actual).await.unwrap();
         let document = Html::parse_document(&document);
-        Ok((document, contents))
+        let response = DocumentResponse
+        {
+            html: document,
+            contents,
+            name: cards.name,
+            number: cards.number,
+            sign_date: cards.sign_date,
+            publication_url: cards.publication_url,
+            hash,
+            redaction_id: actual.id
+        };
+        Ok(response)
     }
+}
+
+pub struct DocumentResponse
+{
+    pub html: Html,
+    pub contents: Contents,
+    pub name: String,
+    pub number: String,
+    pub sign_date: Date,
+    pub publication_url: String,
+    pub hash: String,
+    pub redaction_id: u32
 }
 
 

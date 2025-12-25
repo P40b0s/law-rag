@@ -9,6 +9,7 @@ pub enum LongContextModel {
 
 impl LongContextModel 
 {
+    //Каждый чанк будет представлен вектором из 1024 чисел (dimension())
     pub fn dimension(&self) -> usize 
     {
         match self {
@@ -16,7 +17,7 @@ impl LongContextModel
             Self::BgeReranker => 1024,
         }
     }
-    
+    //Чанкуйте по 8192 токена (max_tokens())
     pub fn max_tokens(&self) -> usize 
     {
         match self {

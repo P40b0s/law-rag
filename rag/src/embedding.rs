@@ -1,7 +1,6 @@
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
-use snafu::ResultExt;
 use tokenizers::{PaddingParams, Tokenizer};
 use tracing::{info, warn};
 use std::path::Path;
@@ -104,7 +103,7 @@ impl LongContextEmbedder
         info!("Loading model: {}", model_name);
         
         // Создаем конфигурацию модели
-        let config = Config 
+        let config = Config
         { 
             vocab_size: 250002,
             hidden_size: 1024,

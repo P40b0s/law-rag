@@ -1,24 +1,31 @@
-use std::collections::{BTreeMap, HashMap};
+use std::{collections::{BTreeMap, HashMap}, fmt::Debug};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
-use crate::{Error, models::Content};
+use utilites::Date;
+use crate::{Error, actual_redactions_client::DocumentResponse, models::Content};
 const MAX_LVL: usize = 10;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct DocumentNode
+pub struct DocumentNode<C: ToString + Debug>
 {
     content_type: String,
-    content: String,
+    ///original http content
+    original_content: String,
+    /// converted via converter trait content
+    converted_content: C,
+    links: Option<Vec<String>>,
     content_start_id: usize,
     content_end_id: usize,
     content_lvl: usize,
     caption: String,
 }
-impl DocumentNode 
+impl<C: ToString + Debug> DocumentNode<C> 
 {
     pub fn new(
         content_type: &str,
-        content: String,
+        original_content: String,
+        converted_content: C,
+        links: Option<Vec<String>>,
         content_start_id: usize,
         content_end_id: usize,
         content_lvl: usize,
@@ -28,7 +35,9 @@ impl DocumentNode
         Self 
         {
             content_type: content_type.to_string(),
-            content,
+            original_content,
+            converted_content,
+            links,
             content_start_id,
             content_end_id,
             content_lvl,
@@ -36,18 +45,48 @@ impl DocumentNode
         }
     }
     
-    pub fn can_contain(&self, other: &DocumentNode) -> bool 
+    pub fn can_contain(&self, other: &DocumentNode<C>) -> bool 
     {
         other.content_start_id >= self.content_start_id &&
         other.content_end_id <= self.content_end_id &&
         other.content_lvl > self.content_lvl
     }
+    pub fn content_type(&self) -> &str
+    {
+        &self.content_type
+    }
+    pub fn converted_content(&self) -> &C
+    {
+        &self.converted_content
+    }
+    pub fn original_content(&self) -> &str
+    {
+        &self.original_content
+    }
+    pub fn level(&self) -> usize
+    {
+        self.content_lvl
+    }
+    pub fn caption(&self) -> &str
+    {
+        &self.caption
+    }
+    pub fn links_hashes(&self) -> Option<&Vec<String>>
+    {
+        self.links.as_ref()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct DocumentNodes
+pub struct DocumentNodes<C: ToString + Debug>
 {
-    nodes: Vec<DocumentNode>,
+    hash: String,
+    redaction_id: u32,
+    name: String,
+    number: String,
+    sign_date: Date,
+    publication_url: String,
+    nodes: Vec<DocumentNode<C>>,
     //index -> (start, end)
     indexes: BTreeMap<usize, (usize, usize)>,
     // Дети для каждого узла
@@ -55,13 +94,52 @@ pub struct DocumentNodes
     // Узлы по уровням
     by_level: [Vec<usize>; MAX_LVL], //максимальный уровень
 }
-
-impl DocumentNodes 
+impl<C: ToString + Debug> IntoIterator for DocumentNodes<C>
 {
-    pub fn new() -> Self 
+    type Item = DocumentNode<C>;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+    fn into_iter(self) -> Self::IntoIter 
+    {
+        self.nodes.into_iter()
+    }
+}
+
+impl<'a, C: ToString + Debug> IntoIterator for &'a DocumentNodes<C>
+{
+    type Item = &'a DocumentNode<C>;
+    type IntoIter = std::slice::Iter<'a, DocumentNode<C>>;
+    fn into_iter(self) -> Self::IntoIter 
+    {
+        self.nodes.iter()
+    }
+}
+impl<C: ToString + Debug> Default for  DocumentNodes<C> 
+{
+    fn default() -> Self 
+    {
+        Self::new("default".to_owned(), "default".to_owned(), Date::now(), "default".to_owned(), "default".to_owned(), 0)
+    }
+}
+impl<C: ToString + Debug> From<DocumentResponse> for DocumentNodes<C>
+{
+    fn from(value: DocumentResponse) -> Self 
+    {
+        Self::new(value.name, value.number, value.sign_date, value.publication_url, value.hash, value.redaction_id)
+    }
+}
+
+impl<C: ToString + Debug> DocumentNodes<C> 
+{
+    pub fn new(name: String, number: String, sign_date: Date, publication_url: String, hash: String, redaction_id: u32) -> Self 
     {
         Self 
         {
+            hash,
+            redaction_id,
+            name,
+            number,
+            sign_date,
+            publication_url,
             nodes: Vec::with_capacity(2000),
             indexes: BTreeMap::new(),
             children: HashMap::with_capacity(2000),
@@ -69,7 +147,7 @@ impl DocumentNodes
         }
     }
 
-    fn find_parent_node(&self, node: &DocumentNode) -> Option<&DocumentNode>
+    fn find_parent_node(&self, node: &DocumentNode<C>) -> Option<&DocumentNode<C>>
     {
         if let Some(idx) = self.find_parent(node)
         {
@@ -80,7 +158,7 @@ impl DocumentNodes
             None
         }
     }
-    fn find_parent_node_by_range(&self, start: usize, end: usize, lvl: usize) -> Option<&DocumentNode>
+    fn find_parent_node_by_range(&self, start: usize, end: usize, lvl: usize) -> Option<&DocumentNode<C>>
     {
         if let Some(idx) = self.find_parent_by_range(start, end, lvl)
         {
@@ -91,7 +169,7 @@ impl DocumentNodes
             None
         }
     }
-    fn find_parent(&self, node: &DocumentNode) -> Option<usize>
+    fn find_parent(&self, node: &DocumentNode<C>) -> Option<usize>
     {
         if node.content_lvl == 0
         {
@@ -124,7 +202,7 @@ impl DocumentNodes
         
         None
     }
-    pub fn insert(&mut self, node: DocumentNode) -> Option<usize> 
+    pub fn insert(&mut self, node: DocumentNode<C>) -> Option<usize> 
     {
         let idx = self.nodes.len();
         let level = node.content_lvl;
@@ -184,7 +262,7 @@ impl DocumentNodes
         !(end1 < start2 || end2 < start1)
     }
     
-    fn has_conflict_with_siblings(&self, parent_idx: usize, new_node: &DocumentNode) -> bool 
+    fn has_conflict_with_siblings(&self, parent_idx: usize, new_node: &DocumentNode<C>) -> bool 
     {
         if let Some(siblings) = self.children.get(&parent_idx) 
         {
@@ -204,7 +282,7 @@ impl DocumentNodes
     }
     
     // Найти ВСЕХ родителей (все уровни)
-    pub fn find_all_parents(&self, start: usize, end: usize, lvl: usize) -> Vec<&DocumentNode> 
+    pub fn find_all_parents(&self, start: usize, end: usize, lvl: usize) -> Vec<&DocumentNode<C>> 
     {
         let mut result = Vec::new();
         let mut current = Some((start, end, lvl));
@@ -212,7 +290,7 @@ impl DocumentNodes
         {
             if let Some(parent) = self.find_parent_node_by_range(start, end, lvl)
             {
-                info!("find parent {:?}", parent);
+                //info!("find parent {:?}", parent);
                 current = Some((parent.content_start_id, parent.content_end_id, parent.content_lvl));
                 result.push(parent);
             }
@@ -220,6 +298,37 @@ impl DocumentNodes
         // Сортируем по уровню (от младшего к старшему)
         result.sort_by_key(|&node| node.content_lvl);
         result
+    }
+    pub fn find_all_parents_by_node(&self, node: &DocumentNode<C>) -> Vec<&DocumentNode<C>> 
+    {
+        self.find_all_parents(node.content_start_id, node.content_end_id, node.content_lvl)
+    }
+    pub fn find_all_parents_as_str(&self, node: &DocumentNode<C>) -> String 
+    {
+        let parents = self.find_all_parents(node.content_start_id, node.content_end_id, node.content_lvl);
+        let mut p = parents
+        .into_iter()
+        .map(|p| p.caption.replace("$", "")).fold(String::new(), |acc, v|
+        {
+            if acc.is_empty()
+            {
+                v
+            }
+            else
+            {
+                acc + "->" + &v
+            }
+        });
+        if p.is_empty()
+        {
+            p.push_str(&node.caption().replace("$", ""));
+        }
+        else 
+        {
+            p.push_str(&["->", &node.caption().replace("$", "")].concat());
+        }
+        p
+        
     }
     
     pub fn get_children(&self, node_idx: usize) -> &[usize] {
@@ -329,6 +438,30 @@ impl DocumentNodes
         result.is_valid = result.errors.is_empty();
         result
     }
+    pub fn redaction_id(&self) -> u32
+    {
+        self.redaction_id
+    }
+    pub fn hash(&self) -> &str
+    {
+        &self.hash
+    }
+    pub fn publication_url(&self) -> &str
+    {
+        &self.publication_url
+    }
+    pub fn number(&self) -> &str
+    {
+        &self.number
+    }
+    pub fn sign_date(&self) -> &Date
+    {
+        &self.sign_date
+    }
+    pub fn title(&self) -> &str
+    {
+        &self.name
+    }
 }
 
 
@@ -406,7 +539,7 @@ mod tests
         logger::init();
         println!("=== Тест 1: Базовый функционал ===");
         
-        let mut store = DocumentNodes::new();
+        let mut store = DocumentNodes::default();
         
         // Создаем структуру:
         // L0: [0-1000] (корень)
@@ -414,11 +547,11 @@ mod tests
         //     L2: [120-180]
         //       L3: [130-140]
         
-        let root = DocumentNode::new("doc", "Root".to_string(), 0, 1000, 0, "Root");
-        let l1 = DocumentNode::new("section", "Section".to_string(), 100, 200, 1, "Section 1");
-        let l2 = DocumentNode::new("subsection", "Subsection".to_string(), 120, 180, 2, "Subsection 1");
-        let l3 = DocumentNode::new("paragraph", "Paragraph".to_string(), 130, 140, 3, "Paragraph 1");
-        let root2 = DocumentNode::new("doc", "Root2".to_string(), 1001, 1100, 0, "Root2");
+        let root = DocumentNode::new("doc", "Root".to_string(),"Root".to_string(), None, 0, 1000, 0, "Root");
+        let l1 = DocumentNode::new("section", "Section".to_string(),"Section".to_string(), None, 100, 200, 1, "Section 1");
+        let l2 = DocumentNode::new("subsection", "Subsection".to_string(),"Subsection".to_string(), None, 120, 180, 2, "Subsection 1");
+        let l3 = DocumentNode::new("paragraph", "Paragraph".to_string(),"Paragraph".to_string(), None, 130, 140, 3, "Paragraph 1");
+        let root2 = DocumentNode::new("doc", "Root2".to_string(),"Root2".to_string(), None, 1001, 1100, 0, "Root2");
         
         assert_eq!(store.insert(root), Some(0));
         assert_eq!(store.insert(l1), Some(1));
@@ -453,7 +586,7 @@ mod tests
         println!("=== Тест 2: Производительность вставки ===");
         
         let mut rng = rand::rng();
-        let mut store = DocumentNodes::new();
+        let mut store = DocumentNodes::default();
         
         // Сначала добавляем корневые узлы уровня 1
         let mut level1_nodes = Vec::new();
@@ -463,6 +596,8 @@ mod tests
             level1_nodes.push(DocumentNode::new(
                 "section",
                 format!("Section {}", i),
+                format!("Section {}", i),
+                None,
                 start,
                 end,
                 1,
@@ -489,6 +624,8 @@ mod tests
             level2_nodes.push(DocumentNode::new(
                 "subsection",
                 format!("Subsection {}", i),
+                format!("Subsection {}", i),
+                None,
                 start,
                 end,
                 2,
@@ -514,6 +651,8 @@ mod tests
             level3_nodes.push(DocumentNode::new(
                 "paragraph",
                 format!("Paragraph {}", i),
+                format!("Paragraph {}", i),
+                None,
                 start,
                 end,
                 3,
@@ -547,28 +686,28 @@ mod tests
     fn test_interval_conflicts() {
         println!("=== Тест 3: Конфликты интервалов ===");
         
-        let mut store = DocumentNodes::new();
+        let mut store = DocumentNodes::default();
         
         // Добавляем корневой узел
-        store.insert(DocumentNode::new("doc", "Root".to_string(), 0, 1000, 0, "Root"));
+        store.insert(DocumentNode::new("doc", "Root".to_string(),"Root".to_string(),None, 0, 1000, 0, "Root"));
         
         // Узел уровня 1
-        store.insert(DocumentNode::new("section", "S1".to_string(), 100, 200, 1, "Section 1"));
+        store.insert(DocumentNode::new("section", "S1".to_string(),"S1".to_string(),None, 100, 200, 1, "Section 1"));
         
         // Попытка добавить узел с пересекающимся интервалом на том же уровне
-        let result = store.insert(DocumentNode::new("section", "S2".to_string(), 150, 250, 1, "Section 2"));
+        let result = store.insert(DocumentNode::new("section", "S2".to_string(),"S2".to_string(),None, 150, 250, 1, "Section 2"));
         assert!(result.is_none(), "Должен быть отклонен из-за конфликта интервалов");
         
         // Добавляем узел без конфликта
-        let result = store.insert(DocumentNode::new("section", "S3".to_string(), 300, 400, 1, "Section 3"));
+        let result = store.insert(DocumentNode::new("section", "S3".to_string(),"S3".to_string(),None, 300, 400, 1, "Section 3"));
         assert!(result.is_some(), "Должен быть добавлен успешно");
         
         // Добавляем дочерний узел внутри первого
-        let result = store.insert(DocumentNode::new("subsection", "SS1".to_string(), 110, 190, 2, "Subsection 1"));
+        let result = store.insert(DocumentNode::new("subsection", "SS1".to_string(),"SS1".to_string(),None, 110, 190, 2, "Subsection 1"));
         assert!(result.is_some(), "Должен быть добавлен как ребенок");
         
         // Попытка добавить узел уровня 2, который выходит за пределы родителя
-        let result = store.insert(DocumentNode::new("subsection", "SS2".to_string(), 90, 210, 2, "Subsection 2"));
+        let result = store.insert(DocumentNode::new("subsection", "SS2".to_string(),"SS2".to_string(),None, 90, 210, 2, "Subsection 2"));
         assert!(result.is_none(), "Должен быть отклонен - выходит за пределы родителя");
         
         let validation = store.validate();
@@ -584,28 +723,28 @@ mod tests
         logger::init();
         println!("=== Тест 4: Поиск родителей в сложной структуре ===");
         
-        let mut store = DocumentNodes::new();
+        let mut store = DocumentNodes::default();
         
         // Создаем вложенную структуру:
         // L1: [0-100], [200-300], [400-500]
         //   L2 внутри [0-100]: [10-30], [40-60], [70-90]
         //     L3 внутри [10-30]: [12-18], [20-25]
         
-        store.insert(DocumentNode::new("doc", "Root".to_string(), 0, 1000, 0, "Root"));
+        store.insert(DocumentNode::new("doc", "Root".to_string(),"Root".to_string(),None, 0, 1000, 0, "Root"));
         
         // Уровень 1
-        store.insert(DocumentNode::new("section", "S1".to_string(), 0, 100, 1, "Section A"));
-        store.insert(DocumentNode::new("section", "S2".to_string(), 200, 300, 1, "Section B"));
-        store.insert(DocumentNode::new("section", "S3".to_string(), 400, 500, 1, "Section C"));
+        store.insert(DocumentNode::new("section", "S1".to_string(),"S1".to_string(),None, 0, 100, 1, "Section A"));
+        store.insert(DocumentNode::new("section", "S2".to_string(),"S2".to_string(),None, 200, 300, 1, "Section B"));
+        store.insert(DocumentNode::new("section", "S3".to_string(),"S3".to_string(),None, 400, 500, 1, "Section C"));
         
         // Уровень 2 внутри первого раздела
-        store.insert(DocumentNode::new("subsection", "SS1".to_string(), 10, 30, 2, "Sub A1"));
-        store.insert(DocumentNode::new("subsection", "SS2".to_string(), 40, 60, 2, "Sub A2"));
-        store.insert(DocumentNode::new("subsection", "SS3".to_string(), 70, 90, 2, "Sub A3"));
+        store.insert(DocumentNode::new("subsection", "SS1".to_string(),"SS1".to_string(),None, 10, 30, 2, "Sub A1"));
+        store.insert(DocumentNode::new("subsection", "SS2".to_string(),"SS2".to_string(),None, 40, 60, 2, "Sub A2"));
+        store.insert(DocumentNode::new("subsection", "SS3".to_string(),"SS3".to_string(),None, 70, 90, 2, "Sub A3"));
         
         // Уровень 3
-        store.insert(DocumentNode::new("paragraph", "P1".to_string(), 12, 18, 3, "Para 1"));
-        store.insert(DocumentNode::new("paragraph", "P2".to_string(), 20, 25, 3, "Para 2"));
+        store.insert(DocumentNode::new("paragraph", "P1".to_string(),"P1".to_string(),None, 12, 18, 3, "Para 1"));
+        store.insert(DocumentNode::new("paragraph", "P2".to_string(),"P2".to_string(),None, 20, 25, 3, "Para 2"));
         
         // Тестируем поиск родителей
         println!("Поиск родителя для [12-18] lvl 3:");
@@ -649,11 +788,11 @@ mod tests
     fn test_load_test() {
         println!("=== Тест 5: Нагрузочное тестирование ===");
         
-        let mut store = DocumentNodes::new();
-        let mut rng = rand::thread_rng();
+        let mut store = DocumentNodes::default();
+        let mut rng = rand::rng();
         
         // Добавляем корень
-        store.insert(DocumentNode::new("doc", "Root".to_string(), 0, 10000, 0, "Root"));
+        store.insert(DocumentNode::new("doc", "Root".to_string(),"Root".to_string(),None, 0, 10000, 0, "Root"));
         
         let total_nodes = 2000;
         let mut inserted = 0;
@@ -679,6 +818,8 @@ mod tests
             let node = DocumentNode::new(
                 "node",
                 format!("Node {}", i),
+                format!("Node {}", i),
+                None,
                 start,
                 end,
                 level,
@@ -735,8 +876,8 @@ mod tests
     fn test_operations_benchmark() {
         println!("=== Тест 6: Бенчмарк операций ===");
         
-        let mut store = DocumentNodes::new();
-        let mut rng = rand::thread_rng();
+        let mut store = DocumentNodes::default();
+        let mut rng = rand::rng();
         
         // Подготовка: создаем тестовые данные
         let mut test_nodes = Vec::new();
@@ -747,6 +888,8 @@ mod tests
             test_nodes.push(DocumentNode::new(
                 "section",
                 format!("Section {}", i),
+                format!("Section {}", i),
+                None,
                 start,
                 start + 9,
                 1,
@@ -757,10 +900,12 @@ mod tests
         // 500 узлов уровня 2
         for i in 0..500 {
             let parent_start = (i % 10) * 10;
-            let start = parent_start + rng.gen_range(0..5);
+            let start = parent_start + rng.random_range(0..5);
             test_nodes.push(DocumentNode::new(
                 "subsection",
                 format!("Subsection {}", i),
+                format!("Subsection {}", i),
+                None,
                 start,
                 start + 2,
                 2,
@@ -780,9 +925,9 @@ mod tests
         let search_start = Instant::now();
         let mut found = 0;
         for _ in 0..1000 {
-            let start = rng.gen_range(0..100);
-            let end = start + rng.gen_range(1..5);
-            let level = rng.gen_range(1..=3);
+            let start = rng.random_range(0..100);
+            let end = start + rng.random_range(1..5);
+            let level = rng.random_range(1..=3);
             
             if store.find_parent_by_range(start, end, level).is_some() {
                 found += 1;
@@ -795,7 +940,7 @@ mod tests
         let children_start = Instant::now();
         let mut total_children = 0;
         for _ in 0..1000 {
-            let node_idx = rng.gen_range(0..store.node_count());
+            let node_idx = rng.random_range(0..store.node_count());
             total_children += store.get_children(node_idx).len();
         }
         let children_time = children_start.elapsed();

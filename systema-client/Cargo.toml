@@ -15,5 +15,6 @@ tracing-subscriber.workspace = true
 utilites.workspace = true
 encoding.workspace = true
 regex.workspace = true
-rangemap.workspace = true
+
+[dev-dependencies]
 rand.workspace = true

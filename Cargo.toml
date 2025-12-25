@@ -4,12 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = [
+members = ["pipeline","embedding",
     "rag","systema-client"
 ]
 [workspace.dependencies]
 candle-core = "0.9.1"
 candle-nn ="0.9.1"
+hf-hub = "0.4.3"
 candle-transformers = {version = "0.9.1"}
 tokenizers = {version ="0.22.2", features = ["http"]}
 scraper = "0.25.0"
@@ -27,3 +28,4 @@ regex = "1.12.2"
 qdrant-client = {version = "1.16.0"}
 uuid = "1.19.0"
 rand="0.9.2"
+text-splitter = {git = "https://github.com/benbrandt/text-splitter.git", features = ["tokenizers"]}
