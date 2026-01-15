@@ -3,7 +3,7 @@ use candle_core::Tensor;
 use candle_nn::VarBuilder;
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::{PaddingParams, Tokenizer};
-use tracing::info;
+use tracing::{debug, info};
 use crate::{context_model::ContextModel, error::{Error, Result}};
 
 pub struct Embeddings
@@ -12,6 +12,10 @@ pub struct Embeddings
 }
 impl Embeddings
 {
+    pub fn dimension(&self) -> usize
+    {
+        self.context_model.dimension
+    }
     pub async fn new() -> Result<Self>
     {
         Ok(Self
@@ -29,6 +33,25 @@ impl Embeddings
     {
         let embeddings = self.embed_tensor_batch(texts).await?;
         Ok(embeddings.to_vec1()?)
+    }
+    pub async fn generate_embeddings(&self, texts: &[&str]) -> Result<Vec<f32>>
+    {
+        let tensor = self.embed_tensor_batch(texts).await?;
+        let mut vector = tensor.to_vec2()?;
+        debug!("emb vector len: {}", vector.len());
+        if vector.len() > 1
+        {
+            return Err(Error::VectorError);
+        }
+        let first = vector.pop();
+        if let Some(first) = first
+        {
+            Ok(first)
+        }
+        else 
+        {
+            Err(Error::VectorError)
+        }
     }
     pub async fn embed_tensor_batch(&self, texts: &[&str]) -> Result<Tensor>
     {

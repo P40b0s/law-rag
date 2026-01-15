@@ -1,2 +1,5 @@
 /target
 pytorch_model.bin
+snapshots
+storage
+.qdrant-initialized

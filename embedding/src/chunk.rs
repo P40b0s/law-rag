@@ -462,7 +462,7 @@ pub struct Chunk
     pub hash: String,
     pub path: String,
     pub content: String,
-    pub liks_hashes: Option<Vec<String>>,
+    pub links_hashes: Option<Vec<String>>,
     pub embeddings: Option<Vec<f32>>,
     pub meta: Option<ChunkMeta>
 }

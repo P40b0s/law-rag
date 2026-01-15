@@ -16,7 +16,7 @@ pub enum Error
     ContentError(String),
     #[error(transparent)]
     UtilitesError(#[from] utilites::error::Error),
-    #[error("parse htmp error: `{0}`")]
+    #[error("parse html error: `{0}`")]
     ScraperError(String),
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::error::Error),

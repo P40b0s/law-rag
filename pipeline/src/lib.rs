@@ -1,5 +1,7 @@
 mod html_converter;
 mod logger;
+mod chunks;
+mod error;
 use serde::{Deserialize, Serialize};
 use scraper::Node;
 use systema_client::Converter;
@@ -13,6 +15,7 @@ use html_converter::HtmlConverter;
 #[cfg(test)]
 mod tests
 {
+    use database::QdrantConfig;
     use systema_client::{DocumentNode, DocumentNodes};
     use tracing::{debug, info};
     use utilites::Date;
@@ -47,7 +50,7 @@ mod tests
                     sign_date: result.sign_date().to_owned(),
                     hash: result.hash().to_owned(),
                     path: result.find_all_parents_as_str(&node),
-                    liks_hashes: node.links_hashes().cloned(),
+                    links_hashes: node.links_hashes().cloned(),
                     content: text.content,
                     embeddings: None,
                     meta: Some(ChunkMeta
@@ -65,5 +68,27 @@ mod tests
            
             debug!("chunk created: {:#?}", chunk);
         }
+    }
+
+    #[tokio::test]
+    async fn test_qdrant()
+    {
+        logger::init();
+        let emb_client = embedding::Embeddings::new().await.unwrap();
+        let qconfig = QdrantConfig
+        {
+            url: "http://localhost:6334".to_owned(),
+            collection_name: "test_collection".to_owned(),
+            distance: database::Distance::Cosine
+        };
+        let qdrant = database::QdrantManager::new(qconfig, emb_client).await.unwrap();
+        let _ = qdrant.ensure_collection().await.unwrap();
+        let date = Date::new_date(31, 07, 2025);
+        let number = "287-ФЗ";  
+        let chunks = super::chunks::get_chunks(date, number).await.unwrap();
+        let res = qdrant.add_chunks_to_qdrant(chunks).await;
+        debug!("{:?}", res);
+        assert!(res.is_ok(), "записи не добавлены в базу данных");
+
     }
 }

@@ -53,7 +53,7 @@ mod tests
                     sign_date: result.sign_date().to_owned(),
                     hash: result.hash().to_owned(),
                     path: result.find_all_parents_as_str(&node),
-                    liks_hashes: node.links_hashes().cloned(),
+                    links_hashes: node.links_hashes().cloned(),
                     content: text.content,
                     embeddings: None,
                     meta: Some(ChunkMeta

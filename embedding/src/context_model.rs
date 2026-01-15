@@ -1,11 +1,11 @@
-use std::{ops::Deref, sync::{LazyLock, OnceLock}};
+use std::{ops::Deref, path::{Path, PathBuf}, sync::{LazyLock, OnceLock}};
 use crate::error::{Error, Result};
 use candle_core::Device;
 use candle_nn::VarBuilder;
 use candle_transformers::models::{bert::{BertModel, Config, DTYPE}};
 use serde::{Deserialize, Serialize};
 use tokenizers::{PaddingParams, Tokenizer};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 static MODEL: OnceLock<BertModel> = OnceLock::<BertModel>::new();
 
@@ -27,6 +27,7 @@ pub enum ModelName
 {
     M3
 }
+
 impl Deref for ModelName
 {
     type Target = str;
@@ -38,6 +39,7 @@ impl Deref for ModelName
         }
     }
 }
+
 impl AsRef<str> for ModelName
 {
     fn as_ref(&self) -> &str 
@@ -48,14 +50,30 @@ impl AsRef<str> for ModelName
 
 impl ContextModel 
 {
+    fn current_dir() -> Result<PathBuf>
+    {
+        if cfg!(debug_assertions)
+        {
+            Ok(Path::new("/home/phobos/projects/rust/law-rag").to_path_buf())
+        }
+        else
+        {
+            let current_dir = std::env::current_dir()?;
+            Ok(current_dir)
+        }
+    }
     pub async fn new(model_name: ModelName) -> Result<Self>
     {
+       
+        let current_dir = Self::current_dir()?;
+        debug!("current_dir: {}", current_dir.display());
         info!("Попытка загрузить токенайзер");
         let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
         println!("Device: {:?}", &device);
         let max_tokens = 8192;
         let dimension = 1024;
-        let tokenizer = tokio::fs::read("./model/tokenizer.json").await?;
+        let tokenizer_file = Path::new(&current_dir).join("model").join("tokenizer.json");
+        let tokenizer = tokio::fs::read(&tokenizer_file).await?;
         let mut tokenizer = Tokenizer::from_bytes(tokenizer)?;
         let pp = PaddingParams 
         {
@@ -63,7 +81,8 @@ impl ContextModel
             ..Default::default()
         };
         tokenizer.with_padding(Some(pp));
-        let config = tokio::fs::read_to_string("./model/config.json").await?;
+        let tokenizer_config = Path::new(&current_dir).join("model").join("config.json");
+        let config = tokio::fs::read_to_string(&tokenizer_config).await?;
         let config = serde_json::from_str(&config)?;
         // let padding = PaddingParams 
         // {
@@ -94,7 +113,9 @@ impl ContextModel
         let device = self.device().clone();
         let result = tokio::task::spawn_blocking(move ||
         {
-            let vb = VarBuilder::from_pth("./model/pytorch_model.bin", DTYPE, &device)?;
+            let current_dir = Self::current_dir()?;
+            let model_file = Path::new(&current_dir).join("model").join("pytorch_model.bin");
+            let vb = VarBuilder::from_pth(&model_file, DTYPE, &device)?;
             // Use tanh based approximation for Gelu instead of erf implementation.
             // if self.approximate_gelu {
             //     config.hidden_act = HiddenAct::GeluApproximate;

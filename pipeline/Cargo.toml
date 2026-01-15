@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 systema-client = {path = "../systema-client"}
 embedding = {path = "../embedding"}
+database = {path = "../database"}
 scraper.workspace = true
 tracing.workspace = true
 tokio.workspace = true

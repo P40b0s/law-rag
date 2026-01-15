@@ -39,7 +39,9 @@ pub enum Error
     {
         #[from]
         source:  JoinError
-    }
+    },
+    #[error("Vector Vec<Vec<f32>> is empty or bigger than 1")]
+    VectorError
    
 }
 
