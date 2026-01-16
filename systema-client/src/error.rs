@@ -12,6 +12,8 @@ pub enum Error
     // }
     #[error("Systema api error: `{0}`")]
     ApiError(String),
+    #[error("Document not found")]
+    DocumentNotFound,
     #[error("Content structure error: `{0}`")]
     ContentError(String),
     #[error(transparent)]

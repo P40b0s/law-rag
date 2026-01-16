@@ -1,0 +1,65 @@
+{
+  "name": "employe-accounting-service-fronend",
+  "description": "Service for employee accounting",
+  "private": true,
+  "version": "0.1.9",
+  "type": "module",
+  "scripts": {
+    "build": "vue-tsc & rsbuild build --env-mode production",
+    "serve": "vue-tsc & rsbuild dev",
+    "tsc": "vue-tsc"
+  },
+  "dependencies": {
+    "@vuepic/vue-datepicker": "^12.1.0",
+    "apexcharts": "^5.3.5",
+    "dompurify": "^3.2.7",
+    "naive-ui": "2.43.1",
+    "option-t": "54.2.3",
+    "strict-event-emitter": "^0.5.1",
+    "ts-pattern": "5.8.0",
+    "uuidv7": "1.1.0",
+    "vue": "3.5.26",
+    "vue-draggable-next": "^2.3.0",
+    "vue-router": "4.5.1",
+    "vue-virtual-scroller": "2.0.0-beta.8",
+    "vue3-apexcharts": "^1.10.0",
+    "vue3-grid-layout-next": "^1.0.7",
+    "vue3-toastify": "^0.2.8",
+    "zod": "4.3.5"
+  },
+  "devDependencies": {
+    "@rsbuild/core": "^1.7.2",
+    "@rsbuild/plugin-pug": "1.3.2",
+    "@rsbuild/plugin-sass": "1.4.1",
+    "@rsbuild/plugin-vue": "1.2.3",
+    "@types/node": "25.0.9",
+    "@vicons/carbon": "^0.13.0",
+    "@vicons/ionicons5": "^0.13.0",
+    "@vicons/material": "0.13.0",
+    "@vue/language-plugin-pug": "3.2.2",
+    "@vue/language-server": "3.2.2",
+    "@vue/typescript-plugin": "3.2.2",
+    "pug": "^3.0.3",
+    "pug-plain-loader": "^1.1.0",
+    "typescript": "5.9.3",
+    "vue-tsc": "3.2.2"
+  },
+  "engines": {
+    "node": "22",
+    "pnpm": "^10"
+  },
+  "main": "index.ts",
+  "repository": "git@github.com:p40b0s/planner.git",
+  "author": "Aleks_xar",
+  "license": "MIT",
+  "eslintConfig": {
+    "env": {
+      "node": true,
+      "vue/setup-compiler-macros": true
+    },
+    "rules": {
+      "@typescript-eslint/consistent-type-imports": "error",
+      "@typescript-eslint/no-import-type-side-effects": "error"
+    }
+  }
+}

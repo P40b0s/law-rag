@@ -2,14 +2,16 @@ mod html_converter;
 mod logger;
 mod chunks;
 mod error;
+mod document;
 use serde::{Deserialize, Serialize};
 use scraper::Node;
 use systema_client::Converter;
 use tracing::info;
-use utilites::Date;
-use embedding::{Chunk, ChunkMeta, ChunkedText, Embeddings, Chunker};
+pub use utilites::Date;
+pub use embedding::{Chunk, ChunkMeta, ChunkedText, Embeddings, Chunker};
 use html_converter::HtmlConverter;
-
+pub use document::load_document;
+pub use error::Error;
 
 //TODO перенести всю логику запроса и его обработки сюда в том числе вычисление эмбеддингов 
 #[cfg(test)]

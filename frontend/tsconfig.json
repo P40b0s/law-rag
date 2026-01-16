@@ -1,0 +1,44 @@
+{
+  "compilerOptions": {
+    "jsx": "preserve",
+    "jsxFactory": "h",
+    "jsxFragmentFactory": "Fragment",
+    "jsxImportSource": "vue",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "module": "ESNext",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+
+    "baseUrl": ".",
+    "paths": {
+        "@/*": ["src/*"],
+        "@services/*": ["src/services/*"],
+        "@styles/*": ["src/styles/*"],
+        "@types/*": ["src/types/*"],
+        "@components/*": ["src/components/*"],
+        "@composables/*": ["src/composables/*"],
+        "@views/*": ["src/views/*"],
+        "@svg/*": ["assets/svg/*"]
+      },
+  },
+  "include": ["./src/**/*.ts", "./src/types/d/*.d.ts", "./src/**/*.d.ts", "./src/**/*.tsx", "./src/**/*.vue", "./src/**/*.svg", "tests/date.test-d.ts"],
+  "files": ["src/types/d/svg.d.ts", "src/types/d/env.d.ts", "src/types/d/router.d.ts", "src/types/d/toast.d.ts"],
+  "typeRoots": ["."]
+}

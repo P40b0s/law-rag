@@ -451,7 +451,7 @@ async fn find_word_boundary(
 }
 
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Chunk
 {
     pub publication_url: String,
@@ -466,7 +466,7 @@ pub struct Chunk
     pub embeddings: Option<Vec<f32>>,
     pub meta: Option<ChunkMeta>
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub struct ChunkMeta
 {
     //http://actual.pravo.gov.ru/list.html#hash=3582241193d46b766ef7d5ae7f8d50577be6bf8a5b6e0d77784769fe1e9628b4

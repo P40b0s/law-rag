@@ -6,7 +6,7 @@ edition = "2024"
 [workspace]
 members = ["pipeline","embedding",
     "rag","systema-client"
-, "database"]
+, "database", "service"]
 [workspace.dependencies]
 candle-core = "0.9.1"
 candle-nn ="0.9.1"

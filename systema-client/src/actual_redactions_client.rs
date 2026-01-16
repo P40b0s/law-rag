@@ -219,6 +219,10 @@ impl ActualRedactionsClient
         {
             return Err(Error::ApiError(["По запросу ", "№ ", number, " от ", &formatted_date, " найдено более 1(",&docs.len().to_string(),") документа, уточните запрос"  ].concat()));
         }
+        if docs.len() == 0
+        {
+            return Err(Error::DocumentNotFound)
+        }
         let doc = 
         {
             docs.into_iter().next().unwrap()
