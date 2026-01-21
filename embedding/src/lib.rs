@@ -2,8 +2,11 @@ mod logger;
 mod html_converter;
 mod chunk;
 mod error;
-mod context_model;
+mod retriver;
 mod embeddings;
+mod reranker;
+mod configuration;
+mod model;
 use serde::{Deserialize, Serialize};
 use tokenizers::Tokenizer;
 use scraper::Node;
@@ -14,16 +17,21 @@ use html_converter::HtmlConverter;
 
 pub use chunk::{Chunk, ChunkMeta, Chunker, ChunkedText};
 pub use embeddings::Embeddings;
+pub use reranker::{BgeReranker, RerankResult};
+pub use retriver::RetriverModel;
 pub use error::Error;
+pub use configuration::EmbeddingConfiguration;
 
 #[cfg(test)]
 mod tests
 {
+    use std::sync::Arc;
+
     use systema_client::{DocumentNode, DocumentNodes};
     use tokenizers::Tokenizer;
     use tracing::{debug, info};
     use utilites::Date;
-    use crate::{Chunk, HtmlConverter, chunk::{ChunkMeta, Chunker}, logger};
+    use crate::{Chunk, EmbeddingConfiguration, Embeddings, HtmlConverter, chunk::{ChunkMeta, Chunker}, retriver::RetriverModel, logger};
 
     #[tokio::test]
     async fn test_converter()
@@ -37,7 +45,9 @@ mod tests
 
         let mut chunks = Vec::with_capacity(result.node_count());
         info!("Ноды документы были успешно получены: {} шт.", result.node_count());
-        let chunker = Chunker::new().await.unwrap();
+         let emb_cfg = Arc::new(EmbeddingConfiguration::default());
+        let model = RetriverModel::new(emb_cfg).await.unwrap();
+        let chunker = Chunker::new(&model).await.unwrap();
         for node in &result
         {
             //бьем текст на куски тут и для каждого создаем чанку

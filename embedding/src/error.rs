@@ -41,7 +41,13 @@ pub enum Error
         source:  JoinError
     },
     #[error("Vector Vec<Vec<f32>> is empty or bigger than 1")]
-    VectorError
+    VectorError,
+    #[error(transparent)]
+    RerankerError
+    {
+        #[from]
+        source:  anyhow::Error
+    },
    
 }
 

@@ -1,5 +1,6 @@
 /target
 pytorch_model.bin
+model.safetensors
 snapshots
 storage
 .qdrant-initialized

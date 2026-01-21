@@ -1,14 +1,16 @@
+use std::sync::Arc;
+
 use candle_transformers::models::bert::{BertModel, Config, HiddenAct, DTYPE};
 use candle_core::Tensor;
 use candle_nn::VarBuilder;
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::{PaddingParams, Tokenizer};
 use tracing::{debug, info};
-use crate::{context_model::ContextModel, error::{Error, Result}};
+use crate::{EmbeddingConfiguration, error::{Error, Result}, model::Model, retriver::RetriverModel};
 
 pub struct Embeddings
 {
-    context_model: ContextModel
+    context_model: RetriverModel
 }
 impl Embeddings
 {
@@ -16,12 +18,18 @@ impl Embeddings
     {
         self.context_model.dimension
     }
-    pub async fn new() -> Result<Self>
+    pub async fn new(emb_cfg: Arc<EmbeddingConfiguration>) -> Result<Self>
     {
+        let model = RetriverModel::new(emb_cfg).await?;
+        let model = model.load_model().await?;
         Ok(Self
         {
-            context_model: ContextModel::new(crate::context_model::ModelName::M3).await?
+            context_model: model
         })
+    }
+    pub fn model(&self) -> &RetriverModel
+    {
+        &self.context_model
     }
     async fn embed_vec(&self, text: &str) -> Result<Vec<f32>>
     {
@@ -57,7 +65,7 @@ impl Embeddings
     {
         let start = std::time::Instant::now();
         let device = self.context_model.device();
-        let model = self.context_model.model().await?;
+        let model = self.context_model.model()?;
          let tokens = self.context_model.tokenizer()
             .encode_batch(texts.to_vec(), true)?;
 
@@ -103,7 +111,7 @@ impl Embeddings
     async fn embed_tensor(&self, text: &str) -> Result<Tensor>
     {
         let start = std::time::Instant::now();
-        let model = self.context_model.model().await?;
+        let model = self.context_model.model()?;
         let tokens = self.context_model.tokenizer()
             .encode(text, true)?;
 
@@ -122,15 +130,18 @@ impl Embeddings
 #[cfg(test)]
 mod tests
 {
+    use std::sync::Arc;
+
     use tracing::info;
 
-    use crate::logger;
+    use crate::{EmbeddingConfiguration, logger};
 
     #[tokio::test]
     async fn test_embed()
     {
         logger::init();
-        let emb = super::Embeddings::new().await.unwrap();
+        let emb_cfg = Arc::new(EmbeddingConfiguration::default());
+        let emb = super::Embeddings::new(emb_cfg).await.unwrap();
         let text = &["Тестовый текст лалалал"];
         let e =  emb.embed_tensor_batch(text).await;
         info!("{:?}", e);
@@ -139,7 +150,8 @@ mod tests
     async fn test_embed2()
     {
         logger::init();
-        let emb = super::Embeddings::new().await.unwrap();
+        let emb_cfg = Arc::new(EmbeddingConfiguration::default());
+        let emb = super::Embeddings::new(emb_cfg).await.unwrap();
         let text = "Тестовый текст лалалал";
         let e =  emb.embed_tensor(text).await;
         info!("{:?}", e);

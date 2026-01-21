@@ -3,6 +3,7 @@ mod logger;
 mod chunks;
 mod error;
 mod document;
+mod search;
 use serde::{Deserialize, Serialize};
 use scraper::Node;
 use systema_client::Converter;
@@ -17,7 +18,10 @@ pub use error::Error;
 #[cfg(test)]
 mod tests
 {
+    use std::sync::Arc;
+
     use database::QdrantConfig;
+    use embedding::EmbeddingConfiguration;
     use systema_client::{DocumentNode, DocumentNodes};
     use tracing::{debug, info};
     use utilites::Date;
@@ -33,10 +37,11 @@ mod tests
             systema_client::SystemaClient::get_document(
                 Date::new_date(31, 07, 2025),
                 "287-ФЗ", converter).await.unwrap();  
-
+        let emb_cfg = Arc::new(EmbeddingConfiguration::default());
+        let model = embedding::RetriverModel::new(emb_cfg).await.unwrap();
         let mut chunks = Vec::with_capacity(result.node_count());
         info!("Ноды документы были успешно получены: {} шт.", result.node_count());
-        let chunker = Chunker::new().await.unwrap();
+        let chunker = Chunker::new(&model).await.unwrap();
         for node in &result
         {
             //бьем текст на куски тут и для каждого создаем чанку
@@ -76,18 +81,21 @@ mod tests
     async fn test_qdrant()
     {
         logger::init();
-        let emb_client = embedding::Embeddings::new().await.unwrap();
+        let emb_cfg = Arc::new(EmbeddingConfiguration::default());
+        let emb_client = embedding::Embeddings::new(emb_cfg.clone()).await.unwrap();
+        let reranker_client = embedding::BgeReranker::new(emb_cfg).await.unwrap();
         let qconfig = QdrantConfig
         {
             url: "http://localhost:6334".to_owned(),
             collection_name: "test_collection".to_owned(),
             distance: database::Distance::Cosine
         };
-        let qdrant = database::QdrantManager::new(qconfig, emb_client).await.unwrap();
-        let _ = qdrant.ensure_collection().await.unwrap();
+       
         let date = Date::new_date(31, 07, 2025);
         let number = "287-ФЗ";  
-        let chunks = super::chunks::get_chunks(date, number).await.unwrap();
+        let chunks = super::chunks::get_chunks(date, number, emb_client.model()).await.unwrap();
+        let qdrant = database::QdrantManager::new(qconfig, emb_client, reranker_client).await.unwrap();
+        let _ = qdrant.ensure_collection().await.unwrap();
         let res = qdrant.add_chunks_to_qdrant(chunks).await;
         debug!("{:?}", res);
         assert!(res.is_ok(), "записи не добавлены в базу данных");

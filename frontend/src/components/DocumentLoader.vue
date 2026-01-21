@@ -223,7 +223,8 @@ const truncateContent = (content: string, maxLength: number) =>
     : content
 }
 
-const getStatusText = (status: LoadStatus) => {
+const getStatusText = (status: LoadStatus) => 
+{
   const statusMap = {
     'NotFound': 'Не найден',
     'Timeout': 'Таймаут',
@@ -233,7 +234,8 @@ const getStatusText = (status: LoadStatus) => {
   return statusMap[status] || status
 }
 
-const getStatusColor = (status: LoadStatus) => {
+const getStatusColor = (status: LoadStatus) => 
+{
   const colorMap = {
     'NotFound': '#ff4757',
     'Timeout': '#ffa502',
@@ -243,7 +245,8 @@ const getStatusColor = (status: LoadStatus) => {
   return colorMap[status] || '#cccccc'
 }
 
-const getStatusTagType = (status: LoadStatus) => {
+const getStatusTagType = (status: LoadStatus) => 
+{
   const typeMap = {
     'NotFound': 'error',
     'Timeout': 'warning',
@@ -253,12 +256,14 @@ const getStatusTagType = (status: LoadStatus) => {
   return typeMap[status] || 'default'
 }
 
-const disableFutureDate = (timestamp: number) => {
+const disableFutureDate = (timestamp: number) => 
+{
   return timestamp > Date.now()
 }
 
 // Открытие модального окна для добавления
-const openAddModal = () => {
+const openAddModal = () => 
+{
   formModel.value = {
     number: '',
     sign_date: null
@@ -267,7 +272,8 @@ const openAddModal = () => {
 }
 
 // Просмотр деталей документа
-const viewDocumentDetails = (document: Document) => {
+const viewDocumentDetails = (document: Document) => 
+{
   selectedDocument.value = document
   showDetailsModal.value = true
 }

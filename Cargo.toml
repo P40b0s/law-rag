@@ -30,3 +30,5 @@ qdrant-client = {version = "1.16.0"}
 uuid =  {version = "1.19.0", features = ["v4"]}
 rand="0.9.2"
 text-splitter = {git = "https://github.com/benbrandt/text-splitter.git", features = ["tokenizers"]}
+figment = "*"
+tokio-test="*"

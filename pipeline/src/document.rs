@@ -1,10 +1,10 @@
-use embedding::{Chunk, ChunkMeta, Chunker};
+use embedding::{Chunk, ChunkMeta, Chunker, RetriverModel};
 use tracing::{debug, info};
 use utilites::Date;
+use anyhow::Result;
+use crate::{HtmlConverter, logger};
 
-use crate::{HtmlConverter, error::Result, logger};
-
-pub async fn load_document(number: &str, date: Date) -> Result<Vec<Chunk>>
+pub async fn load_document(number: &str, date: Date, model: &RetriverModel) -> Result<Vec<Chunk>>
 {
     logger::init();
     let converter = HtmlConverter{};
@@ -15,7 +15,7 @@ pub async fn load_document(number: &str, date: Date) -> Result<Vec<Chunk>>
 
     let mut chunks = Vec::with_capacity(result.node_count());
     info!("Ноды документы были успешно получены: {} шт.", result.node_count());
-    let chunker = Chunker::new().await?;
+    let chunker = Chunker::new(&model).await?;
     for node in &result
     {
         //бьем текст на куски тут и для каждого создаем чанку

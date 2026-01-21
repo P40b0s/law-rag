@@ -1,14 +1,17 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use tokenizers::Tokenizer;
 use scraper::Node;
 use systema_client::Converter;
 use tracing::{error, info, warn};
 use utilites::Date;
-use crate::{error::{Error, Result}, context_model::ContextModel};
+use crate::{EmbeddingConfiguration, error::Error, model::Model, retriver::RetriverModel};
+use anyhow::{Result, anyhow};
 
-pub struct Chunker
+pub struct Chunker<'m>
 {
-    model: ContextModel,
+    model: &'m RetriverModel,
 }
 pub struct ChunkedText
 {
@@ -17,11 +20,10 @@ pub struct ChunkedText
     pub chunk_index: usize,
     pub total_chunks: usize,
 }
-impl Chunker
+impl<'m> Chunker<'m>
 {
-    pub async fn new() -> Result<Self>
+    pub async fn new(model: &'m RetriverModel) -> Result<Self>
     {
-        let model = ContextModel::new(crate::context_model::ModelName::M3).await?;
         Ok(Self
         {
            model
@@ -30,7 +32,8 @@ impl Chunker
     
     pub async fn split_text(&self, text: &str) -> Result<Vec<ChunkedText>> {
         // Токенизируем весь документ
-        let encoding = self.model.tokenizer().encode(text, false)?;
+        let encoding = self.model.tokenizer().encode(text, false)
+            .map_err(|e| anyhow!("Error {} when encode text {}", e, text))?;
         let tokens: Vec<u32> = encoding.get_ids().to_vec();
         
         if tokens.is_empty() {
@@ -61,7 +64,8 @@ impl Chunker
             
             // Декодируем чанк
             let chunk_tokens = &tokens[start..end];
-            let chunk_text = self.model.tokenizer().decode(chunk_tokens, false)?;
+            let chunk_text = self.model.tokenizer().decode(chunk_tokens, false)
+                .map_err(|e| anyhow!("Error {} when decode text", e))?;
             
             let chunk = ChunkedText {
                 content: chunk_text,
@@ -265,7 +269,8 @@ impl Chunker
     }
     
     // Декодируем весь диапазон для анализа
-    let text_fragment = tokenizer.decode(&tokens[start..end], false)?;
+    let text_fragment = tokenizer.decode(&tokens[start..end], false)
+         .map_err(|e| anyhow!("Error {} when decode text", e))?;
     
     // Ищем границы в обратном порядке (от конца к началу)
     let mut best_boundary: Option<(usize, usize)> = None; // (position, priority)
@@ -303,7 +308,8 @@ impl Chunker
                         // Декодируем контекст для проверки
                         let context_start = if i > 5 { i - 5 } else { 0 };
                         let context_end = std::cmp::min(i + 5, tokens.len());
-                        let context = tokenizer.decode(&tokens[context_start..context_end], false)?;
+                        let context = tokenizer.decode(&tokens[context_start..context_end], false)
+                            .map_err(|e| anyhow!("Error {} when decode text", e))?;
                         
                         // Убеждаемся, что это валидная граница
                         if self.is_valid_boundary(&context, pattern, i, tokens, tokenizer).await? {
@@ -371,7 +377,8 @@ async fn is_valid_boundary(
         let end_idx = std::cmp::min(position + check_window, tokens.len());
         
         if start_idx < end_idx {
-            let window_text = tokenizer.decode(&tokens[start_idx..end_idx], false)?;
+            let window_text = tokenizer.decode(&tokens[start_idx..end_idx], false)
+                .map_err(|e| anyhow!("Error {} when decode text", e))?;
             
             // Проверяем, окружена ли точка/запятая цифрами
             let pattern_pos = window_text.find(pattern).unwrap_or(0);
@@ -385,7 +392,8 @@ async fn is_valid_boundary(
                 {
                     // Дополнительная проверка: если это запятая и после нее 3 цифры - это разделитель тысяч
                     if pattern == "," && end_idx - position > 4 {
-                        let after_text = tokenizer.decode(&tokens[position..std::cmp::min(position + 4, tokens.len())], false)?;
+                        let after_text = tokenizer.decode(&tokens[position..std::cmp::min(position + 4, tokens.len())], false)
+                            .map_err(|e| anyhow!("Error {} when decode text", e))?;
                         if after_text.chars().take(3).all(|c| c.is_ascii_digit()) {
                             return Ok(false);
                         }
@@ -440,7 +448,8 @@ async fn find_word_boundary(
     
     for i in (search_start..tokens.len()).rev() {
         if i > 0 {
-            let context = tokenizer.decode(&tokens[i-1..std::cmp::min(i+1, tokens.len())], false)?;
+            let context = tokenizer.decode(&tokens[i-1..std::cmp::min(i+1, tokens.len())], false)
+                .map_err(|e| anyhow!("Error {} when decode text", e))?;
             if context.contains(' ') {
                 return Ok(Some(i));
             }

@@ -1,6 +1,6 @@
 mod error;
 
-use embedding::Chunk;
+use embedding::{BgeReranker, Chunk, RerankResult};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -78,12 +78,13 @@ pub struct QdrantManager
 {
     client: Qdrant,
     config: QdrantConfig,
-    embedding_client: embedding::Embeddings, // Ваш клиент для эмбеддингов
+    embedding_client: embedding::Embeddings,
+    reranking_client: embedding::BgeReranker
 }
 
 impl QdrantManager 
 {
-    pub async fn new(config: QdrantConfig, embedding_client: embedding::Embeddings) -> Result<Self> 
+    pub async fn new(config: QdrantConfig, embedding_client: embedding::Embeddings, reranking_client: BgeReranker) -> Result<Self> 
     {
         let client = Qdrant::from_url(&config.url)
             .build()?;
@@ -93,6 +94,7 @@ impl QdrantManager
             client,
             config,
             embedding_client,
+            reranking_client
         })
     }
     
@@ -181,18 +183,18 @@ impl QdrantManager
         
         Ok(QdrantPoint 
             {
-            id,
-            vector,
-            payload: QdrantPayload 
-            {
-                text: chunk.content,
-                document_uri: chunk.document_url,
-                document_title: chunk.title,
-                document_number: chunk.number,
-                document_sign_date: chunk.sign_date.to_string(),
-                path: chunk.path,
-                chunk_index: chunk.meta.and_then(|m| Some(m.chunk_index)).unwrap_or(0),
-            },
+                id,
+                vector,
+                payload: QdrantPayload 
+                {
+                    text: chunk.content,
+                    document_uri: chunk.document_url,
+                    document_title: chunk.title,
+                    document_number: chunk.number,
+                    document_sign_date: chunk.sign_date.to_string(),
+                    path: chunk.path,
+                    chunk_index: chunk.meta.and_then(|m| Some(m.chunk_index)).unwrap_or(0),
+                },
         })
     }
     
@@ -202,7 +204,7 @@ impl QdrantManager
         query: &str,
         limit: usize,
         filter: Option<SearchFilter>,
-    ) -> Result<Vec<SearchResult>> {
+    ) -> Result<Vec<RerankResult<SearchResult>>> {
         // Получаем эмбеддинг для запроса
         let query_vector = self.embedding_client.generate_embeddings(&[query]).await?;
         // Строим запрос к Qdrant
@@ -238,8 +240,9 @@ impl QdrantManager
             .into_iter()
             .map(|sp| SearchResult::from_scored_point(sp))
             .collect();
-        
-        Ok(results)
+        let reranking = self.reranking_client.rerank(query, results, 5).await.inspect_err(|e| tracing::error!("{}", e))?;
+        //reranking.into_iter().map(|r| r)
+        Ok(reranking)
     }
     
     /// Поиск с гибридным подходом (семантический + ключевые слова)
@@ -253,7 +256,13 @@ impl QdrantManager
     ) -> Result<Vec<SearchResult>> {
         // 1. Семантический поиск
         let semantic_results = self.semantic_search(query, limit * 2, filter.clone()).await?;
-        
+        let semantic_results = semantic_results.into_iter()
+        .map(|r| SearchResult
+        {
+            id: r.payload.id,
+            score: r.score,
+            payload: r.payload.payload
+        }).collect();
         // 2. Поиск по ключевым словам (если нужно)
         // Можно использовать BM25 или другие методы
         let keyword_results = self.keyword_search(query, limit * 2, filter).await?;
@@ -530,6 +539,15 @@ pub struct SearchResult
     pub score: f32,
     pub payload: QdrantPayload,
 }
+
+impl AsRef<str> for SearchResult
+{
+    fn as_ref(&self) -> &str 
+    {
+        &self.payload.text
+    }
+}
+
 
 
 impl SearchResult 
