@@ -8,7 +8,7 @@ use tracing::{info, warn};
 use candle_core::{Device, Tensor, quantized::gguf_file::{self, Content}};
 use crate::{EmbeddingConfiguration, token_output_stream::TokenOutputStream};
 
-type ModelWeights = candle_transformers::models::quantized_gemma3::ModelWeights;
+type ModelWeights = candle_transformers::models::quantized_llama::ModelWeights;
 #[derive(Debug, Clone)]
 pub struct GeneratorSettings
 {
@@ -81,7 +81,7 @@ impl Generator
         { 
             settings,
             model_settings: GeneratorSettings::default(),
-            system_prompt: "Ты - ассистент RAG системы, ты должен отвечать на вопросы пользователей используя предоставленный контекст для формирования ответа".to_owned(),
+            system_prompt: "Ты - ассистент RAG системы, ты должен отвечать на вопросы пользователей используя ТОЛЬКО предоставленный контекст для формирования ответа. Отвечай сразу, не пиши \"На основе предоставленого контекста..\" итд. Если в контексте нет информации, скажи: \"Не могу ответить на основе имеющейся информации\"".to_owned(),
             model: None,
             tokenizer: None,
             device
@@ -170,16 +170,33 @@ impl Generator
         &self.model_settings
     }
     ///generate message for model with query and context
-    fn get_message(&self, query: &str, context: &[&str]) -> String 
+    fn get_message_gemma(&self, query: &str, context: &[&str]) -> String 
     {
         let prompt = format!("<|im_start|>system\n{}\nКонтекст:\n{}<|im_end|>
         <|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
         &self.system_prompt, query, context.join("\n"));
         prompt
     }
-    fn get_eof(&self) -> &'static str
+    fn get_eof_gemma(&self) -> &'static str
     {
         "<|im_end|>"
+    }
+
+     fn get_message_llama(&self, query: &str, context: &[&str]) -> String 
+    {
+        let prompt = format!(
+        "<|begin_of_text|>\
+        <|start_header_id|>system<|end_header_id|>\n\n\
+        {}\nКонтекст:\n{}<|eot_id|>\n\
+        <|start_header_id|>user<|end_header_id|>\n\n\
+        {}<|eot_id|>\n\
+        <|start_header_id|>assistant<|end_header_id|>\n\n",
+        &self.system_prompt, query, context.join("\n"));
+        prompt
+    }
+    fn get_eof_llama(&self) -> &'static str
+    {
+        "<|eot_id|>"
     }
     fn forward(&mut self, input: &candle_core::Tensor, offset: usize) -> anyhow::Result<candle_core::Tensor> 
     {
@@ -244,7 +261,7 @@ impl ModelPrompt for Generator
         Box::pin(async move 
         {
             let mut tos = self.get_token_stream();
-            let prompt_str = self.get_message(query, context);
+            let prompt_str = self.get_message_llama(query, context);
             let tokens = tos
                 .tokenizer()
                 .encode(prompt_str, true)
@@ -254,7 +271,7 @@ impl ModelPrompt for Generator
             let to_sample = model_settings.sample_len.saturating_sub(1);
             let mut all_tokens = vec![];
             let mut logits_processor = self.get_logits_processor();
-            let eos_token = *tos.tokenizer().get_vocab(true).get(self.get_eof()).context("Error load eos token")?;
+            let eos_token = *tos.tokenizer().get_vocab(true).get(self.get_eof_llama()).context("Error load eos token")?;
 
             let start_prompt_processing = std::time::Instant::now();
             let mut next_token = if !model_settings.split_prompt 
@@ -354,7 +371,7 @@ mod tests
 {
     use std::sync::Arc;
 
-    use tracing::info;
+    use tracing::{debug, info};
 
     use crate::{EmbeddingConfiguration, generator::ModelPrompt, logger};
 
@@ -367,7 +384,11 @@ mod tests
         let query = "Какого цвета лицо начальника когда он сердится или не трезв?";
         let context = vec!["Обычно лицо начальника серого цвета", "Когда он выпьет лицо красного цвета", "когда он нервничает у него лицо становиться синим", "Когда сердится то становиться похож на снегиря"];
         let (rx, mut tx) = tokio::sync::mpsc::unbounded_channel();
-        tokio::spawn(async move  {let _ = model.prompt(query, context.as_slice(), rx).await;});
+        tokio::spawn(async move  
+        {
+            let result = model.prompt(query, context.as_slice(), rx).await;
+            debug!("{:?}", result);
+        });
         while let Some(output) = tx.recv().await
         {
             info!("{}", output);

@@ -15,3 +15,5 @@ embedding = {path = "../embedding"}
 thiserror.workspace = true
 anyhow.workspace = true
 sqlx.workspace = true
+tokio-test.workspace = true
+tokio.workspace = true

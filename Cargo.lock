@@ -812,6 +812,8 @@ dependencies = [
  "serde_json",
  "sqlx",
  "thiserror 2.0.17",
+ "tokio",
+ "tokio-test",
  "tracing",
  "tracing-subscriber",
  "utilites",
@@ -3849,6 +3851,8 @@ dependencies = [
  "sha2",
  "smallvec",
  "thiserror 2.0.17",
+ "tokio",
+ "tokio-stream",
  "tracing",
  "url",
 ]
@@ -3887,6 +3891,7 @@ dependencies = [
  "sqlx-postgres",
  "sqlx-sqlite",
  "syn",
+ "tokio",
  "url",
 ]
 

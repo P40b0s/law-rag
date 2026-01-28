@@ -54,15 +54,15 @@ fn retriver_tokenizer_path() -> PathBuf
 
 fn generator_model_path() -> PathBuf 
 {
-    Path::new("/home/phobos/projects/rust/law-rag/model/generator/saiga_gemma3_12b.Q5_K_M.gguf").to_path_buf()
+    Path::new("/home/phobos/projects/rust/law-rag/model/generator/llama3/model-q4_K.gguf").to_path_buf()
 }
 fn generator_config_path() -> PathBuf 
 {
-    Path::new("/home/phobos/projects/rust/law-rag/model/generator/config.json").to_path_buf()
+    Path::new("/home/phobos/projects/rust/law-rag/model/generator/llama3/config.json").to_path_buf()
 }
 fn generator_tokenizer_path() -> PathBuf 
 {
-    Path::new("/home/phobos/projects/rust/law-rag/model/generator/tokenizer.json").to_path_buf()
+    Path::new("/home/phobos/projects/rust/law-rag/model/generator/llama3/tokenizer.json").to_path_buf()
 }
 
 
