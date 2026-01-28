@@ -14,3 +14,4 @@ tracing-subscriber.workspace = true
 embedding = {path = "../embedding"}
 thiserror.workspace = true
 anyhow.workspace = true
+sqlx.workspace = true

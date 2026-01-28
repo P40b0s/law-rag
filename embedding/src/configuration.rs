@@ -17,6 +17,13 @@ pub struct EmbeddingConfiguration
     pub retriver_config_path: PathBuf,
     #[serde(default = "retriver_tokenizer_path")]
     pub retriver_tokenizer_path: PathBuf,
+
+    #[serde(default = "generator_model_path")]
+    pub generator_model_path: PathBuf,
+    #[serde(default = "generator_config_path")]
+    pub generator_config_path: PathBuf,
+    #[serde(default = "generator_tokenizer_path")]
+    pub generator_tokenizer_path: PathBuf,
 }
 
 fn reranker_model_path() -> PathBuf 
@@ -45,6 +52,20 @@ fn retriver_tokenizer_path() -> PathBuf
     Path::new("/home/phobos/projects/rust/law-rag/model/tokenizer.json").to_path_buf()
 }
 
+fn generator_model_path() -> PathBuf 
+{
+    Path::new("/home/phobos/projects/rust/law-rag/model/generator/saiga_gemma3_12b.Q5_K_M.gguf").to_path_buf()
+}
+fn generator_config_path() -> PathBuf 
+{
+    Path::new("/home/phobos/projects/rust/law-rag/model/generator/config.json").to_path_buf()
+}
+fn generator_tokenizer_path() -> PathBuf 
+{
+    Path::new("/home/phobos/projects/rust/law-rag/model/generator/tokenizer.json").to_path_buf()
+}
+
+
 impl Default for EmbeddingConfiguration
 {
     fn default() -> Self 
@@ -56,7 +77,10 @@ impl Default for EmbeddingConfiguration
             reranker_tokenizer_path: reranker_tokenizer_path(),
             retriver_model_path: retriver_model_path(),
             retriver_config_path: retriver_config_path(),
-            retriver_tokenizer_path: retriver_tokenizer_path() 
+            retriver_tokenizer_path: retriver_tokenizer_path(),
+            generator_model_path: generator_model_path(),
+            generator_config_path: generator_config_path(),
+            generator_tokenizer_path: generator_tokenizer_path()
         }
     }
 }

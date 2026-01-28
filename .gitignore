@@ -1,6 +1,7 @@
 /target
 pytorch_model.bin
 model.safetensors
+saiga_gemma3_12b.Q5_K_M.gguf
 snapshots
 storage
 .qdrant-initialized

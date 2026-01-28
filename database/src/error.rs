@@ -8,6 +8,10 @@ pub enum Error
     QdrantError(#[from] qdrant_client::QdrantError),
     #[error(transparent)]
     AnyhowError(#[from] anyhow::Error),
+    #[error(transparent)]
+    SqlxError(#[from] sqlx::Error),
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
     #[error("Vector size mismatch: expected {0}, got {1}")]
     VectorSizeError(usize, usize),
     #[error(transparent)]

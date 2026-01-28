@@ -7,6 +7,8 @@ mod embeddings;
 mod reranker;
 mod configuration;
 mod model;
+mod generator;
+mod token_output_stream;
 use serde::{Deserialize, Serialize};
 use tokenizers::Tokenizer;
 use scraper::Node;
