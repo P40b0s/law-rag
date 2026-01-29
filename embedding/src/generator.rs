@@ -81,7 +81,7 @@ impl Generator
         { 
             settings,
             model_settings: GeneratorSettings::default(),
-            system_prompt: "Ты - ассистент RAG системы, ты должен отвечать на вопросы пользователей используя ТОЛЬКО предоставленный контекст для формирования ответа. Отвечай сразу, не пиши \"На основе предоставленого контекста..\" итд. Если в контексте нет информации, скажи: \"Не могу ответить на основе имеющейся информации\"".to_owned(),
+            system_prompt: "Ты - ассистент RAG системы, ты должен отвечать на вопросы пользователей используя ТОЛЬКО предоставленный контекст для формирования ответа. начало ответа должно звучать так: `На основе имеющейся у меня информации: {далее идет твой ответ}`.  Если в контексте нет информации, скажи: \"Не могу ответить на основе имеющейся информации\"".to_owned(),
             model: None,
             tokenizer: None,
             device
@@ -245,21 +245,25 @@ impl Generator
 
 pub trait ModelPrompt 
 {
-    fn prompt<'a>(
+     fn prompt<'a>(
         &'a mut self,
         query: &'a str,
         context: &'a[&'a str],
         sender: tokio::sync::mpsc::UnboundedSender<String>,
-    ) -> BoxFuture<'a, anyhow::Result<()>>;
+    ) -> anyhow::Result<()>;
 }
 
 impl ModelPrompt for Generator
 {
     fn prompt<'a>(&'a mut self, query: &'a str, context: &'a[&'a str], sender: tokio::sync::mpsc::UnboundedSender<String>,)
-     -> BoxFuture<'a, anyhow::Result<()>>
+     -> anyhow::Result<()>
     {
-        Box::pin(async move 
-        {
+            match sender.send("ТЕСТ: Начинаю генерацию".to_string()) 
+            {
+                Ok(_) => info!("[PROMPT] Тестовое сообщение отправлено"),
+                Err(e) => info!("[PROMPT] Ошибка отправки: {}", e),
+            }
+            info!("Сообщение должно быть отправлено!");
             let mut tos = self.get_token_stream();
             let prompt_str = self.get_message_llama(query, context);
             let tokens = tos
@@ -360,20 +364,44 @@ impl ModelPrompt for Generator
                 sampled as f64 / dt.as_secs_f64(),
             );
             Ok(())
-        })
     }
 }
 
 
-
+struct Test{}
+trait TestTrait
+{
+     fn prompt<'a>(
+        &'a mut self,
+        sender: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> BoxFuture<'a, anyhow::Result<()>>;
+}
+impl TestTrait for Test
+{
+    fn prompt<'a>(
+            &'a mut self,
+            sender: tokio::sync::mpsc::UnboundedSender<String>,
+        ) -> BoxFuture<'a, anyhow::Result<()>> 
+    {
+        Box::pin(async move 
+        {
+            for i in 0..10
+            {
+                let _ = sender.send(format!("message {}", i));
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+            }
+            Ok(())
+        })
+    }
+}
 #[cfg(test)]
 mod tests
 {
-    use std::sync::Arc;
+    use std::{io::Write, sync::Arc};
 
     use tracing::{debug, info};
 
-    use crate::{EmbeddingConfiguration, generator::ModelPrompt, logger};
+    use crate::{EmbeddingConfiguration, generator::{ModelPrompt, TestTrait}, logger};
 
     #[tokio::test]
     async fn test_load_model()
@@ -383,15 +411,43 @@ mod tests
         let mut model = super::Generator::load(config).await.unwrap();
         let query = "Какого цвета лицо начальника когда он сердится или не трезв?";
         let context = vec!["Обычно лицо начальника серого цвета", "Когда он выпьет лицо красного цвета", "когда он нервничает у него лицо становиться синим", "Когда сердится то становиться похож на снегиря"];
-        let (rx, mut tx) = tokio::sync::mpsc::unbounded_channel();
-        tokio::spawn(async move  
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        //сообщения из канала не выводятся в тесте!
+        tokio::spawn(
+            async move 
+            {
+                while let Some(output) = receiver.recv().await
+                {
+                    info!("{}", output);
+                }
+            }
+        );
+        tokio::task::spawn_blocking(move ||
         {
-            let result = model.prompt(query, context.as_slice(), rx).await;
+            let result = model.prompt(query, context.as_slice(), sender);
             debug!("{:?}", result);
+            
         });
-        while let Some(output) = tx.recv().await
-        {
-            info!("{}", output);
-        }
+        
+    }
+
+
+    #[tokio::test]
+    async fn test_channel()
+    {
+        logger::init();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        //сообщения из канала не выводятся в тесте!
+        tokio::spawn(
+            async move 
+            {
+                while let Some(output) = receiver.recv().await
+                {
+                    info!("{}", output);
+                }
+            }
+        );
+        let mut test = super::Test{};
+        let _ = test.prompt(sender).await;
     }
 }
