@@ -16,8 +16,9 @@ where  Self: Sized
     fn config(&self) -> &Config;
     fn embedding_config(&self) -> Arc<EmbeddingConfiguration>;
     fn device(&self) -> &Device;
-    async fn load_model(self) -> Result<Self>;
+    fn load_model(self) -> impl std::future::Future<Output = Result<Self>> + Send;
     fn model(&self) -> Result<&BertModel>;
+    fn unload_model(self) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

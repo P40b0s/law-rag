@@ -1,4 +1,4 @@
-use pipeline::Chunk;
+use rag_service::Chunk;
 use serde::Serialize;
 use utilites::Date;
 

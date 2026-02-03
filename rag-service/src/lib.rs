@@ -4,6 +4,7 @@ mod chunks;
 mod error;
 mod document;
 mod search;
+mod service;
 use serde::{Deserialize, Serialize};
 use scraper::Node;
 use systema_client::Converter;
@@ -13,6 +14,7 @@ pub use embedding::{Chunk, ChunkMeta, ChunkedText, Embeddings, Chunker};
 use html_converter::HtmlConverter;
 pub use document::load_document;
 pub use error::Error;
+pub use service::Service;
 
 //TODO перенести всю логику запроса и его обработки сюда в том числе вычисление эмбеддингов 
 #[cfg(test)]
@@ -94,11 +96,23 @@ mod tests
         let date = Date::new_date(31, 07, 2025);
         let number = "287-ФЗ";  
         let chunks = super::chunks::get_chunks(date, number, emb_client.model()).await.unwrap();
-        let qdrant = database::QdrantManager::new(qconfig, emb_client, reranker_client).await.unwrap();
+        let qdrant = database::QdrantManager::new(qconfig, &emb_client, &reranker_client).await.unwrap();
         let _ = qdrant.ensure_collection().await.unwrap();
-        let res = qdrant.add_chunks_to_qdrant(chunks).await;
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(
+        async move 
+        {
+            while let Some(m) = receiver.recv().await
+            {
+                info!("{:?}", m);
+            }
+        });
+        
+        let res = qdrant.add_chunks_to_qdrant(chunks, sender).await;
         debug!("{:?}", res);
         assert!(res.is_ok(), "записи не добавлены в базу данных");
 
     }
+
+    
 }

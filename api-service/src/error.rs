@@ -16,9 +16,17 @@ pub enum Error
     #[error("Ошибка, путь не найден")]
     PathNotFound,
     #[error(transparent)]
-    PipelineError(#[from] pipeline::Error),
+    PipelineError(#[from] rag_service::Error),
     #[error("Не найдено ни одного чанка в документе `{0}` от `{1}`")]
     ChunksIsEmpty(String, String),
+    #[error(transparent)]
+    AnyhowError(#[from] anyhow::Error),
+    #[error(transparent)]
+    DatabaseError(#[from] database::Error),
+    #[error("Ошибка загрузки моделей: `{0}`")]
+    ModelsError(String),
+    #[error("Уже идет обработка документа: `{0}`")]
+    EmbeddingInProgress(String),
 }
 
 impl Error

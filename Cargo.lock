@@ -88,6 +88,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 
 [[package]]
+name = "api-service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "axum 0.8.8",
+ "database",
+ "embedding",
+ "flate2",
+ "futures",
+ "futures-util",
+ "if-addrs",
+ "include_dir",
+ "jwt_authentification",
+ "lazy_static",
+ "logger 0.1.2 (git+https://github.com/P40b0s/logger.git)",
+ "mime_guess",
+ "once_cell",
+ "parking_lot",
+ "rag-service",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_sqlite_jsonb",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-test",
+ "tokio-util",
+ "tower 0.5.3",
+ "tower-http",
+ "tracing",
+ "utilites",
+ "uuid",
+]
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2788,25 +2824,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
-name = "pipeline"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "database",
- "embedding",
- "scraper",
- "serde",
- "serde_json",
- "systema-client",
- "thiserror 2.0.17",
- "tokio",
- "tokio-test",
- "tracing",
- "tracing-subscriber",
- "utilites",
-]
-
-[[package]]
 name = "pkcs1"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3038,23 +3055,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
-name = "rag"
+name = "rag-service"
 version = "0.1.0"
 dependencies = [
- "candle-core",
- "candle-nn",
- "candle-transformers",
- "qdrant-client",
+ "anyhow",
+ "database",
+ "embedding",
  "scraper",
  "serde",
+ "serde_json",
  "systema-client",
  "thiserror 2.0.17",
- "tokenizers",
  "tokio",
+ "tokio-test",
  "tracing",
  "tracing-subscriber",
  "utilites",
- "uuid",
 ]
 
 [[package]]
@@ -3610,38 +3626,6 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
-]
-
-[[package]]
-name = "service"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "axum 0.8.8",
- "flate2",
- "futures",
- "futures-util",
- "if-addrs",
- "include_dir",
- "jwt_authentification",
- "lazy_static",
- "logger 0.1.2 (git+https://github.com/P40b0s/logger.git)",
- "mime_guess",
- "once_cell",
- "pipeline",
- "regex",
- "serde",
- "serde_json",
- "serde_sqlite_jsonb",
- "thiserror 2.0.17",
- "tokio",
- "tokio-test",
- "tokio-util",
- "tower 0.5.3",
- "tower-http",
- "utilites",
- "uuid",
 ]
 
 [[package]]

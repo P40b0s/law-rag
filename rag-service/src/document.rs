@@ -1,8 +1,62 @@
+use database::{DocumentCardDbo, DocumentDbo};
 use embedding::{Chunk, ChunkMeta, Chunker, RetriverModel};
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 use utilites::Date;
 use anyhow::Result;
 use crate::{HtmlConverter, logger};
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Document
+{
+    pub document_uri: String,        // URI исходного документа
+    pub document_hash: String,
+    pub document_title: String, // Заголовок документа
+    pub document_number: String,    // Номер документа
+    pub document_sign_date: Date, // Дата подписания документа
+    pub has_embeddings: bool,
+    pub chunks_count: u32,
+    pub chunks: Vec<Chunk>,
+    pub status: u8,
+}
+
+impl From<DocumentDbo> for Document
+{
+    fn from(value: DocumentDbo) -> Self 
+    {
+        Self 
+        { 
+            document_uri: value.document_uri,
+            document_hash: value.document_hash,
+            document_title: value.document_title,
+            document_number: value.document_number,
+            document_sign_date: value.document_sign_date,
+            has_embeddings: value.has_embeddings,
+            chunks_count: value.chunks_count,
+            chunks: value.chunks,
+            status: value.status as u8
+        }   
+    }
+}
+
+impl From<DocumentCardDbo> for Document
+{
+    fn from(value: DocumentCardDbo) -> Self 
+    {
+        Self 
+        { 
+            document_uri: value.document_uri,
+            document_hash: value.document_hash,
+            document_title: value.document_title,
+            document_number: value.document_number,
+            document_sign_date: value.document_sign_date,
+            has_embeddings: value.has_embeddings,
+            chunks_count: value.chunks_count,
+            chunks: Vec::with_capacity(0),
+            status: value.status as u8
+        }      
+    }
+}
 
 pub async fn load_document(number: &str, date: Date, model: &RetriverModel) -> Result<Vec<Chunk>>
 {

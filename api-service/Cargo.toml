@@ -1,5 +1,5 @@
 [package]
-name = "service"
+name = "api-service"
 version = "0.1.0"
 edition = "2024"
 
@@ -15,7 +15,6 @@ logger = { version="*", git="https://github.com/P40b0s/logger.git"}
 #auth_service = { version="*", git="https://github.com/P40b0s/auth_service.git"}
 jwt_authentification = { version="*", git="https://github.com/P40b0s/jwt_authentification.git"}
 thiserror="2.0.16"
-anyhow="1.0.99"
 uuid= {version="1.19.0", features = ["v7", "serde"] }
 axum= {version = "0.8.8", features = ["tokio", "json", "query", "multipart"]}
 tower = {version = "0.5.3", features = ["full"]}
@@ -23,7 +22,7 @@ tower-http= {version = "0.6.8", features = ["cors", "fs", "trace", "limit", "com
 futures = "0.3.31"
 futures-util = { version = "0.3.31", default-features = false, features = ["sink", "std"] }
 async-stream="0.3.6"
-
+parking_lot.workspace = true
 include_dir = "0.7"
 mime_guess = "2.0"
 flate2 = "1.0"  # Для сжатия статических файлов
@@ -33,9 +32,10 @@ regex="1.12.2"
 if-addrs ="0.14.0"
 
 # systema-client = {path = "../systema-client"}
-# embedding = {path = "../embedding"}
-# database = {path = "../database"}
-pipeline = {path = "../pipeline"}
-
+embedding = {path = "../embedding"}
+database = {path = "../database"}
+rag-service = {path = "../rag-service"}
+tracing.workspace = true
+anyhow.workspace = true
 [dev-dependencies]
 tokio-test= {version ="0.4.5"}

@@ -10,10 +10,17 @@ use candle_transformers::models::{bert::{BertModel, Config, DTYPE}};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
-pub struct RerankResult<P>
+pub struct RerankResult<P: ToString>
 {
     pub score: f32,
-    pub payload: P,
+    pub db_object: P,
+}
+impl<P: ToString> ToString for RerankResult<P>
+{
+    fn to_string(&self) -> String 
+    {
+        self.db_object.to_string()
+    }
 }
 
 pub struct BgeReranker 
@@ -74,6 +81,11 @@ impl Model for BgeReranker
         }).await?;
         let _ = self.model.set(result?);
         Ok(self)
+    }
+    fn unload_model(mut self) -> Result<()> 
+    {
+        self.model = OnceLock::new();
+        Ok(())
     }
     fn model(&self) -> Result<&BertModel> 
     {
@@ -168,7 +180,7 @@ impl BgeReranker
 
     
     
-    pub async fn rerank<P: AsRef<str>, R>(
+    pub async fn rerank<P: AsRef<str> + ToString, R>(
         &self,
         query: &str,
         candidates: R,
@@ -198,7 +210,7 @@ impl BgeReranker
             .map(|(candidate, score)| RerankResult 
             {
                 score,
-                payload: candidate,
+                db_object: candidate,
             })
             .collect();
         

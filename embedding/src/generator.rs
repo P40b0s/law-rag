@@ -73,7 +73,7 @@ pub struct Generator
 
 impl Generator
 {
-    pub async fn load(settings: Arc<EmbeddingConfiguration>) -> anyhow::Result<Self>
+    pub fn load(settings: Arc<EmbeddingConfiguration>) -> anyhow::Result<Self>
     {
         let device =  Device::cuda_if_available(0).unwrap_or(Device::Cpu);
         info!("Running on device: {:?}", &device);
@@ -86,7 +86,7 @@ impl Generator
             tokenizer: None,
             device
         };
-        let slf = slf.load_tokenizer()?.load_model().await?;
+        let slf = slf.load_tokenizer()?;
         Ok(slf)
     }
     fn format_size(size_in_bytes: usize) -> String 
@@ -141,7 +141,7 @@ impl Generator
     {
         &self.device
     }
-    async fn load_model(mut self) -> anyhow::Result<Self> 
+    pub async fn load_model(mut self) -> anyhow::Result<Self> 
     {
         let (content, mut file) = self.load_tensors().await?;
         let device = self.get_device();
@@ -149,6 +149,10 @@ impl Generator
         info!("model built");
         self.model = Some(model);
         Ok(self)
+    }
+    pub fn unload_model(&mut self)
+    {
+        self.model = None;
     }
     fn load_tokenizer(mut self) -> anyhow::Result<Self> 
     {
@@ -182,7 +186,7 @@ impl Generator
         "<|im_end|>"
     }
 
-     fn get_message_llama(&self, query: &str, context: &[&str]) -> String 
+    fn get_message_llama<C: ToString>(&self, query: &str, context: &[C]) -> String 
     {
         let prompt = format!(
         "<|begin_of_text|>\
@@ -191,7 +195,7 @@ impl Generator
         <|start_header_id|>user<|end_header_id|>\n\n\
         {}<|eot_id|>\n\
         <|start_header_id|>assistant<|end_header_id|>\n\n",
-        &self.system_prompt, query, context.join("\n"));
+        &self.system_prompt, query, context.iter().map(|c| c.to_string()).collect::<Vec<_>>().join("\n"));
         prompt
     }
     fn get_eof_llama(&self) -> &'static str
@@ -245,17 +249,17 @@ impl Generator
 
 pub trait ModelPrompt 
 {
-     fn prompt<'a>(
+     fn prompt<'a, C: ToString>(
         &'a mut self,
         query: &'a str,
-        context: &'a[&'a str],
+        context: &'a[C],
         sender: tokio::sync::mpsc::UnboundedSender<String>,
     ) -> anyhow::Result<()>;
 }
 
 impl ModelPrompt for Generator
 {
-    fn prompt<'a>(&'a mut self, query: &'a str, context: &'a[&'a str], sender: tokio::sync::mpsc::UnboundedSender<String>,)
+    fn prompt<'a, C: ToString>(&'a mut self, query: &'a str, context: &'a[C], sender: tokio::sync::mpsc::UnboundedSender<String>,)
      -> anyhow::Result<()>
     {
             match sender.send("ТЕСТ: Начинаю генерацию".to_string()) 
@@ -335,12 +339,13 @@ impl ModelPrompt for Generator
                 {
                     if !sender.is_closed()
                     {
-                        sender.send(t).map_err(|e| anyhow::anyhow!("Ошибка отправки токена!: {}", e))?;
+
+                        sender.send(t).context("Ошибка отправки токена в канал")?;
                     }
                     else
                     {
                         warn!("Операция отменена юзером");
-                        break;
+                        return Ok(());
                     }
                 }
                 sampled += 1;
@@ -367,48 +372,21 @@ impl ModelPrompt for Generator
     }
 }
 
-
-struct Test{}
-trait TestTrait
-{
-     fn prompt<'a>(
-        &'a mut self,
-        sender: tokio::sync::mpsc::UnboundedSender<String>,
-    ) -> BoxFuture<'a, anyhow::Result<()>>;
-}
-impl TestTrait for Test
-{
-    fn prompt<'a>(
-            &'a mut self,
-            sender: tokio::sync::mpsc::UnboundedSender<String>,
-        ) -> BoxFuture<'a, anyhow::Result<()>> 
-    {
-        Box::pin(async move 
-        {
-            for i in 0..10
-            {
-                let _ = sender.send(format!("message {}", i));
-                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-            }
-            Ok(())
-        })
-    }
-}
 #[cfg(test)]
 mod tests
 {
-    use std::{io::Write, sync::Arc};
+    use std::{sync::Arc};
 
     use tracing::{debug, info};
 
-    use crate::{EmbeddingConfiguration, generator::{ModelPrompt, TestTrait}, logger};
+    use crate::{EmbeddingConfiguration, generator::{ModelPrompt}, logger};
 
     #[tokio::test]
     async fn test_load_model()
     {
         logger::init();
         let config = Arc::new(EmbeddingConfiguration::default());
-        let mut model = super::Generator::load(config).await.unwrap();
+        let mut model = super::Generator::load(config).unwrap().load_model().await.unwrap();
         let query = "Какого цвета лицо начальника когда он сердится или не трезв?";
         let context = vec!["Обычно лицо начальника серого цвета", "Когда он выпьет лицо красного цвета", "когда он нервничает у него лицо становиться синим", "Когда сердится то становиться похож на снегиря"];
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -426,28 +404,6 @@ mod tests
         {
             let result = model.prompt(query, context.as_slice(), sender);
             debug!("{:?}", result);
-            
         });
-        
-    }
-
-
-    #[tokio::test]
-    async fn test_channel()
-    {
-        logger::init();
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        //сообщения из канала не выводятся в тесте!
-        tokio::spawn(
-            async move 
-            {
-                while let Some(output) = receiver.recv().await
-                {
-                    info!("{}", output);
-                }
-            }
-        );
-        let mut test = super::Test{};
-        let _ = test.prompt(sender).await;
     }
 }

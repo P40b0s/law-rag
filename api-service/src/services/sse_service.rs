@@ -1,4 +1,5 @@
 use std::{convert::Infallible, sync::Arc};
+use database::ChunkProcess;
 use serde::Serialize;
 use futures_util::stream::Stream;
 use axum::{extract::State, response::sse::{Event, KeepAlive, Sse}};
@@ -23,10 +24,10 @@ impl SSEService
     {
         self.0.fanout.subscribe()
     }
-    ///Отпрака уведомления что состояние проверки документа было изменено
-    pub fn load_chunk_process(&self, doc_hash: String, status: String )
+
+    pub fn load_chunk_process(&self, process: ChunkProcess)
     {
-        let command = SSECommand::LoadChunks { doc_hash, status };
+        let command = SSECommand::LoadChunk { doc_uri: process.uri.clone(), process };
         self.0.send_command(command);
     }
 }
@@ -37,7 +38,7 @@ impl SSEService
 #[serde(rename_all="snake_case")]
 pub enum SSECommand
 {
-    LoadChunks { doc_hash: String, status: String },
+    LoadChunk { doc_uri: String, process: ChunkProcess },
 }
 
 

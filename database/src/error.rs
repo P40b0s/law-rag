@@ -20,4 +20,6 @@ pub enum Error
         #[from]
         source: embedding::Error
     },
+    #[error(transparent)]
+    SerdeError(#[from] serde_json::Error),
 }

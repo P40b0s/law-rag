@@ -21,7 +21,9 @@ pub use chunk::{Chunk, ChunkMeta, Chunker, ChunkedText};
 pub use embeddings::Embeddings;
 pub use reranker::{BgeReranker, RerankResult};
 pub use retriver::RetriverModel;
+pub use generator::{Generator, GeneratorSettings, ModelPrompt};
 pub use error::Error;
+pub use model::Model;
 pub use configuration::EmbeddingConfiguration;
 
 #[cfg(test)]

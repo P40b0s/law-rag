@@ -6,7 +6,8 @@ use candle_nn::VarBuilder;
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::{PaddingParams, Tokenizer};
 use tracing::{debug, info};
-use crate::{EmbeddingConfiguration, error::{Error, Result}, model::Model, retriver::RetriverModel};
+use crate::{EmbeddingConfiguration, model::Model, retriver::RetriverModel};
+use anyhow::{Result, anyhow};
 
 pub struct Embeddings
 {
@@ -31,6 +32,10 @@ impl Embeddings
     {
         &self.context_model
     }
+    pub fn unload_model(self) -> Result<()> 
+    {
+        self.context_model.unload_model()
+    }
     async fn embed_vec(&self, text: &str) -> Result<Vec<f32>>
     {
         let embeddings = self.embed_tensor(text).await?;
@@ -49,7 +54,7 @@ impl Embeddings
         debug!("emb vector len: {}", vector.len());
         if vector.len() > 1
         {
-            return Err(Error::VectorError);
+            return Err(anyhow!("Vector Vec<Vec<f32>> is empty or bigger than 1"));
         }
         let first = vector.pop();
         if let Some(first) = first
@@ -58,7 +63,7 @@ impl Embeddings
         }
         else 
         {
-            Err(Error::VectorError)
+            return Err(anyhow!("Vector Vec<Vec<f32>> is empty or bigger than 1"));
         }
     }
     pub async fn embed_tensor_batch(&self, texts: &[&str]) -> Result<Tensor>
@@ -67,7 +72,8 @@ impl Embeddings
         let device = self.context_model.device();
         let model = self.context_model.model()?;
          let tokens = self.context_model.tokenizer()
-            .encode_batch(texts.to_vec(), true)?;
+            .encode_batch(texts.to_vec(), true)
+            .map_err(|e| anyhow!("Encode error {}", e))?;
 
         let token_ids = tokens
             .iter()
@@ -113,7 +119,8 @@ impl Embeddings
         let start = std::time::Instant::now();
         let model = self.context_model.model()?;
         let tokens = self.context_model.tokenizer()
-            .encode(text, true)?;
+            .encode(text, true)
+            .map_err(|e| anyhow!("Encode error {}", e))?;
 
         let token_ids = Tensor::new(tokens.get_ids(), self.context_model.device())?.unsqueeze(0)?;
         let attention_mask = Tensor::new(tokens.get_attention_mask(), self.context_model.device())?.unsqueeze(0)?;

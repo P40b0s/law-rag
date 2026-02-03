@@ -126,6 +126,11 @@ impl Model for RetriverModel
         let _ = self.model.set(result?);
         Ok(self)
     }
+    fn unload_model(mut self) -> Result<()> 
+    {
+        self.model = OnceLock::new();
+        Ok(())
+    }
     fn model(&self) -> Result<&BertModel> 
     {
         let model = self.model.get().context("Model is not initialized!")?;

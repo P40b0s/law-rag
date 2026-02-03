@@ -1,4 +1,6 @@
-use embedding::{BgeReranker, Chunk, RerankResult};
+use std::fmt::format;
+
+use embedding::{BgeReranker, Chunk, Model, RerankResult};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -6,6 +8,7 @@ use qdrant_client::qdrant::{
     Condition, CreateCollectionBuilder, FieldCondition, Filter, PointId, PointStruct, ScoredPoint, SearchPoints, SearchPointsBuilder, UpsertPointsBuilder, Value, WithPayloadSelector
 };
 use qdrant_client::Qdrant;
+use crate::chunk_process::ChunkProcess;
 use crate::error::{Result, Error};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -71,17 +74,17 @@ impl From<Distance> for i32
 }
 
 
-pub struct QdrantManager 
+pub struct QdrantManager<'model>
 {
     client: Qdrant,
     config: QdrantConfig,
-    embedding_client: embedding::Embeddings,
-    reranking_client: embedding::BgeReranker
+    embedding_client: &'model embedding::Embeddings,
+    reranking_client: &'model embedding::BgeReranker
 }
 
-impl QdrantManager 
+impl<'model> QdrantManager<'model>
 {
-    pub async fn new(config: QdrantConfig, embedding_client: embedding::Embeddings, reranking_client: BgeReranker) -> Result<Self> 
+    pub async fn new(config: QdrantConfig, embedding_client: &'model embedding::Embeddings, reranking_client: &'model BgeReranker) -> Result<Self> 
     {
         let client = Qdrant::from_url(&config.url)
             .build()?;
@@ -94,7 +97,6 @@ impl QdrantManager
             reranking_client
         })
     }
-    
     /// Создание коллекции (если не существует)
     pub async fn ensure_collection(&self) -> Result<()> 
     {
@@ -128,22 +130,34 @@ impl QdrantManager
     /// Добавление чанков с эмбеддингами в Qdrant
     pub async fn add_chunks_to_qdrant(
         &self,
-        chunks: Vec<Chunk>
+        chunks: Vec<Chunk>,
+        sender: tokio::sync::mpsc::UnboundedSender<ChunkProcess>
     ) -> Result<Vec<String>> {
         let mut all_ids = Vec::new();
-        
+        let chunks_count = chunks.len();
+        let doc_hash = chunks.first().map(|c| c.document_url.clone()).unwrap_or(String::new());
         // Обрабатываем батчами для эффективности
-        for chunk in chunks
+        for (i, chunk) in chunks.into_iter().enumerate()
         {
-            let batch_ids = self.process_batch(chunk).await?;
-            all_ids.extend(batch_ids);
+            let batch_ids = self.process_batch(chunk, chunks_count, i, sender.clone()).await
+                .map_err(|e| ChunkProcess::error(doc_hash.clone(), e));
+            if let Err(e) = batch_ids
+            {
+                let error = Error::AnyhowError(anyhow::anyhow!(e.status.clone()));
+                let _ = sender.send(e);
+                return Err(error);
+            }
+            else
+            {
+                all_ids.extend(batch_ids.unwrap());
+            }
         }
         
         info!("Added {} chunks to Qdrant", all_ids.len());
         Ok(all_ids)
     }
     
-    async fn process_batch(&self, chunk: Chunk) -> Result<Vec<String>> 
+    async fn process_batch(&self, chunk: Chunk, count: usize, current: usize, sender: tokio::sync::mpsc::UnboundedSender<ChunkProcess>) -> Result<Vec<String>> 
     {
         let mut points = Vec::new();
         let dimension = self.embedding_client.dimension();
@@ -155,6 +169,12 @@ impl QdrantManager
         {
             return Err(Error::VectorSizeError(dimension, embeddings.len()));
         }
+        let process = ChunkProcess::process_qdrant(
+            &chunk.hash,
+            current,
+            count
+        );
+      
         // Создаем точку для Qdrant
         let point = self.create_point(chunk, embeddings)?;
         points.push(point);
@@ -166,7 +186,14 @@ impl QdrantManager
         let builder = UpsertPointsBuilder::new(&self.config.collection_name, point_structs);
         // Вставляем в Qdrant
         let _ = self.client.upsert_points(builder.build()).await?;
-        
+        let _sended = sender.send(process);
+        //ошибка отправки, клиент отключился
+        //пока нам это не надо, всеравно все чанки надо загрузить
+        //можно будет сделать отмену опреации
+        // if sended.is_err()
+        // {
+
+        // }
         Ok(points.iter().map(|p| p.id.clone()).collect())
     }
     
@@ -176,7 +203,7 @@ impl QdrantManager
         vector: Vec<f32>,
     ) -> Result<QdrantPoint> 
     {
-        let id = Uuid::new_v4().to_string();
+        let id = Uuid::now_v7().to_string();
         
         Ok(QdrantPoint 
             {
@@ -200,6 +227,7 @@ impl QdrantManager
         &self,
         query: &str,
         limit: usize,
+        rerank_limit: usize,
         filter: Option<SearchFilter>,
     ) -> Result<Vec<RerankResult<SearchResult>>> {
         // Получаем эмбеддинг для запроса
@@ -237,7 +265,8 @@ impl QdrantManager
             .into_iter()
             .map(|sp| SearchResult::from_scored_point(sp))
             .collect();
-        let reranking = self.reranking_client.rerank(query, results, 5).await.inspect_err(|e| tracing::error!("{}", e))?;
+        let reranking = self.reranking_client.rerank(query, results, rerank_limit).await
+            .inspect_err(|e| tracing::error!("{}", e))?;
         //reranking.into_iter().map(|r| r)
         Ok(reranking)
     }
@@ -247,18 +276,19 @@ impl QdrantManager
         &self,
         query: &str,
         limit: usize,
+        rerank_limit: usize,
         filter: Option<SearchFilter>,
         keyword_weight: f32,
         semantic_weight: f32,
     ) -> Result<Vec<SearchResult>> {
         // 1. Семантический поиск
-        let semantic_results = self.semantic_search(query, limit * 2, filter.clone()).await?;
+        let semantic_results = self.semantic_search(query, limit * 2, rerank_limit * 2, filter.clone()).await?;
         let semantic_results = semantic_results.into_iter()
         .map(|r| SearchResult
         {
-            id: r.payload.id,
+            id: r.db_object.id,
             score: r.score,
-            payload: r.payload.payload
+            payload: r.db_object.payload
         }).collect();
         // 2. Поиск по ключевым словам (если нужно)
         // Можно использовать BM25 или другие методы
@@ -400,15 +430,16 @@ impl QdrantManager
     /// Получение всех чанков документа
     pub async fn get_document_chunks(
         &self,
-        document_uri: &str,
+        hash: &str,
         limit: Option<usize>,
     ) -> Result<Vec<SearchResult>> 
     {
         let filter = SearchFilter::new()
-            .add_exact_match("document_uri", document_uri);
+            .add_exact_match("document_hash", hash);
         
         // Используем пустой вектор для получения всех точек
-        let search_request = SearchPoints {
+        let search_request = SearchPoints 
+        {
             collection_name: self.config.collection_name.clone(),
             vector: vec![0.0; self.embedding_client.dimension()],
             filter: Some(filter.into()),
@@ -433,10 +464,10 @@ impl QdrantManager
     }
     
     /// Удаление документа из индекса
-    pub async fn delete_document(&self, document_uri: &str) -> Result<Option<u64>> 
+    pub async fn delete_document(&self, hash: &str) -> Result<Option<u64>> 
     {
         let filter = SearchFilter::new()
-            .add_exact_match("document_uri", document_uri);
+            .add_exact_match("document_hash", hash);
         
         let delete_request = qdrant_client::qdrant::DeletePoints 
         {
@@ -580,6 +611,29 @@ impl SearchResult
             score: sp.score,
             payload,
         }
+    }
+}
+
+impl ToString for SearchResult
+{
+    fn to_string(&self) -> String 
+    {
+        format!
+        (
+            "адрес документа: {}\n
+            номер документа: {}\n
+            дата подписания: {}\n
+            наименование документа: {}\n
+            путь к чанку: {}\n
+            текст чанки: {}\n
+            ---------------\n",
+            &self.payload.document_uri,
+            &self.payload.document_number,
+            &self.payload.document_sign_date,
+            &self.payload.document_title,
+            &self.payload.path,
+            &self.payload.text
+        )
     }
 }
 
