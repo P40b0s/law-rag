@@ -1,11 +1,11 @@
 use std::{collections::HashMap, sync::Arc};
 
 use database::{DocumentDbo, DocumentsTable};
-use rag_service::Chunk;
+use rag_service::{Chunk, Document};
 use tracing::error;
 use utilites::Date;
 
-use crate::{Error, services::embedding_service::EmbeddingService, types::Document};
+use crate::{Error};
 
 pub struct DatabaseService
 {
@@ -30,9 +30,10 @@ impl DatabaseService
         {
             let _ = self.database.create_document(
                 &document.document_uri,
+                &first_chunk.hash,
                 &first_chunk.title,
-                &document.number,
-                &document.sign_date,
+                &document.document_number,
+                &document.document_sign_date,
                 database::DocumentStatus::Loaded,
                 false,
                 &(document.chunks.len() as u32),
@@ -42,18 +43,31 @@ impl DatabaseService
         }
         else 
         {
-            Err(Error::ChunksIsEmpty(document.sign_date.format(utilites::DateFormat::DotDate), document.number.clone()))
+            Err(Error::ChunksIsEmpty(document.document_sign_date.format(utilites::DateFormat::DotDate), document.document_number.clone()))
         }
     }
-
-    pub async fn is_embedded(&self, doc_uri: &str) -> Result<(), Error>
+    pub async fn get_documents_cards(&self) -> Result<Vec<Document>, Error>
     {
-       let _ = self.database.update_status(database::DocumentStatus::Embedded, doc_uri).await.inspect_err(|e| error!("{e}"))?;
+        let docs = self.database.get_documents_without_chunks().await.inspect_err(|e| error!("{}", e))?;
+        Ok(docs.into_iter().map(|d| d.into()).collect())
+    }
+    pub async fn get_document(&self, hash: &str) -> Result<Document, Error>
+    {
+        let doc = self.database.get_document_by_hash(hash).await
+            .inspect_err(|e| error!("{}", e))?;
+        Ok(doc.into())
+    }
+
+    pub async fn set_is_embedded(&self, doc_hash: &str) -> Result<(), Error>
+    {
+       let _ = self.database.update_status(database::DocumentStatus::Embedded, doc_hash).await
+        .inspect_err(|e| error!("{e}"))?;
        Ok(())
     }
-    pub async fn delete(&self, doc_uri: &str) -> Result<(), Error>
+    pub async fn delete(&self, doc_hash: &str) -> Result<(), Error>
     {
-       let _ = self.database.delete_document(doc_uri).await.inspect_err(|e| error!("{e}"))?;
+       let _ = self.database.delete_document(doc_hash).await
+        .inspect_err(|e| error!("{e}"))?;
        Ok(())
     }
 }

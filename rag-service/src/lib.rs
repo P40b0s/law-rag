@@ -12,7 +12,7 @@ use tracing::info;
 pub use utilites::Date;
 pub use embedding::{Chunk, ChunkMeta, ChunkedText, Embeddings, Chunker};
 use html_converter::HtmlConverter;
-pub use document::load_document;
+pub use document::Document;
 pub use error::Error;
 pub use service::Service;
 

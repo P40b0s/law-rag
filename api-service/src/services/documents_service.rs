@@ -1,84 +1,88 @@
 use std::{collections::HashMap, sync::{Arc, atomic::AtomicBool}};
 
-use rag_service::Chunk;
+use database::SearchResult;
+use embedding::RerankResult;
+use rag_service::{Chunk, Document};
+use tokio::sync::mpsc::unbounded_channel;
 use tracing::error;
 use utilites::Date;
+use rag_service::Service;
 
-use crate::{Error, services::{SSEService, database_service::DatabaseService, embedding_service::EmbeddingService}, types::Document};
+use crate::{Error, services::{SSEService, database_service::DatabaseService}};
 
 pub struct DocumentsService
 {
-    pub embedding_service: Arc<EmbeddingService>,
+    pub rag_service: Arc<Service>,
     pub database_service: Arc<DatabaseService>,
     pub sse_service: Arc<SSEService>,
-    pub embedding_in_progress: AtomicBool
+    pub embedding_in_progress: Arc<AtomicBool>
 }
 
 impl DocumentsService
 {
-    pub fn new(emb_service: Arc<EmbeddingService>, database_service: Arc<DatabaseService>, sse_service: Arc<SSEService>) -> Self
+    pub fn new(rag_service: Arc<Service>, database_service: Arc<DatabaseService>, sse_service: Arc<SSEService>) -> Self
     {
         Self 
         { 
             database_service, 
-            embedding_service: emb_service,
+            rag_service: rag_service,
             sse_service,
-            embedding_in_progress: AtomicBool::new(false)
+            embedding_in_progress: Arc::new(AtomicBool::new(false))
         }
     }
-    pub async fn load_document(&mut self, date: Date, number: &str) -> Result<Document, Error>
+    pub async fn get_document(&self, date: Date, number: &str) -> Result<Document, Error>
     {
-        let dot_date = date.format(utilites::DateFormat::DotDate);
-        let emb_model = self.embedding_service.retriver.read().await;
-        if let Some(ret) = emb_model.as_ref()
+        let (sender, mut receiver) = unbounded_channel();
+        let sse_service = self.sse_service.clone();
+        let chunks = self.rag_service.get_chunks(date, number, sender).await?;
+        while let Some(msg) = receiver.recv().await
         {
-            let chunks = rag_service::load_document(number, date, ret.model()).await?;
-            if let Some(_) = chunks.first()
-            {
-                let document = chunks.into();
-                let _ = self.database_service.add_document(&document).await?;
-                Ok(document)
-            }
-            else 
-            {
-                Err(Error::ChunksIsEmpty(dot_date, number.to_owned()))
-            }
+            sse_service.process(msg);
         }
-        else 
-        {
-            Err(Error::ModelsError("Retriver model is not loaded".to_owned()))    
-        }
+        Ok(chunks.into())
     }
+
+    ///Создание эмбеддингов и сохранение в бд qdrant, возвращаем управление сразу, рельтат передается через sse service
     pub async fn embedding_document(&self, document: Document) -> Result<(), Error>
     {
-        if self.embedding_in_progress.load(std::sync::atomic::Ordering::Release)
+        if self.embedding_in_progress.load(std::sync::atomic::Ordering::Acquire)
         {
-            return Err(Error::EmbeddingInProgress(document.document_uri));
+            return Err(Error::EmbeddingInProgress(document.document_hash));
         }
-        self.embedding_in_progress.store(true, std::sync::atomic::Ordering::Acquire);
-        let chunks = document.chunks.clone();
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let rag_service = self.rag_service.clone();
         let sse_service = self.sse_service.clone();
-        tokio::spawn(
-            async move 
+        let process_flag = self.embedding_in_progress.clone();
+        let mut receiver = rag_service.add_chunks_to_qdrant(document.chunks).await?;
+        tokio::task::spawn(async move {
+            while let Some(msg) = receiver.recv().await
             {
-                while let Some(msg) = receiver.recv().await
-                {
-                    sse_service.load_chunk_process(msg);
-                }
+                sse_service.process(msg);
             }
-        );
-        let emb_service = self.embedding_service.clone();
-        let task = tokio::spawn(
-            async move 
-            {
-                let _added = emb_service.add_chunks_to_qdrant(chunks, sender).await
-                .inspect_err(|e| error!("{}", e));
-            }
-        );
-        let _ = task.await;
-        self.embedding_in_progress.store(false, std::sync::atomic::Ordering::Acquire);
+            process_flag.store(false, std::sync::atomic::Ordering::Release);
+        });
         Ok(())
-          
     }
+    ///ждем результата
+    pub async fn search_context(&self, query: &str, limit: usize, rerenker_limit: usize) -> Result<Vec<RerankResult<SearchResult>>, Error>
+    {
+        self.sse_service.message(format!("Идет процесс поиска контекста по запросу `{}`, это может занять несколько минут", query));
+        let context = self.rag_service.search(query, limit, rerenker_limit).await?;
+        Ok(context)
+    }
+    ///возвращаем управление сразу, клиент получает данные по sse service
+    pub async fn generate_result(&self, query: &str, context: Vec<RerankResult<SearchResult>>) -> Result<(), Error>
+    {
+        let rag_service = self.rag_service.clone();
+        let sse_service = self.sse_service.clone();
+        sse_service.message(format!("Идет процесс генерации ответа на вопрос `{}`, из контекста, это может занять несколько десятков минут", query));
+        let mut receiver = rag_service.genereate_response(query, context).await?;
+        tokio::task::spawn(async move {
+            while let Some(msg) = receiver.recv().await
+            {
+                sse_service.generator_message(msg);
+            }
+        });
+        Ok(())
+    }
+
 }

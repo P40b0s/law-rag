@@ -58,6 +58,27 @@ impl From<DocumentCardDbo> for Document
     }
 }
 
+impl From<Vec<Chunk>> for Document
+{
+    fn from(value: Vec<Chunk>) -> Self 
+    {
+        let first_chunk = value.first().unwrap().clone();
+        Self 
+        { 
+            document_uri: first_chunk.document_url,
+            document_hash: first_chunk.hash,
+            document_title: first_chunk.title,
+            document_number: first_chunk.number,
+            document_sign_date: first_chunk.sign_date,
+            has_embeddings: false,
+            chunks_count: value.len() as u32,
+            chunks: value,
+            status: database::DocumentStatus::NotLoaded.into(),
+            
+        }
+    }
+}
+
 pub async fn load_document(number: &str, date: Date, model: &RetriverModel) -> Result<Vec<Chunk>>
 {
     logger::init();

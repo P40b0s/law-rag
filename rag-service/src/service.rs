@@ -90,7 +90,7 @@ impl Service
     }
     //tokio spawn inside, may be long operation
     //progress messages and errors sends via sender
-    pub async fn add_chunks_to_qdrant(self: Arc<Self>, chunks: Vec<Chunk>, sender: tokio::sync::mpsc::UnboundedSender<ChunkProcess>) -> Result<(), Error>
+    pub async fn add_chunks_to_qdrant(self: Arc<Self>, chunks: Vec<Chunk>) -> Result<UnboundedReceiver<ChunkProcess>, Error>
     {
         let cfg = self.qdrant_config();
         let drop_service = self;
@@ -107,6 +107,7 @@ impl Service
         }
         drop(reranker);
         drop(retriver);
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move 
             {
                 let reranker = service.reranker.read().await;
@@ -127,10 +128,10 @@ impl Service
                 }
             }
         );
-        Ok(())
+        Ok(receiver)
         
     }
-
+    ///может потратить много времени на реранкинг, пока не буду канал выводить для статуса
     pub async fn search(&self, query: &str, limit: usize, reranker_limit: usize) -> Result<Vec<RerankResult<SearchResult>>, Error>
     {
         let cfg = self.qdrant_config();
@@ -289,7 +290,7 @@ impl Service
         let task_service = Arc::clone(&service);
         let query = query.to_owned();
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        std::thread::spawn(async move ||
+        std::thread::spawn(move ||
         {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
@@ -334,23 +335,41 @@ mod tests
         });
         let chunks = service.get_chunks(date, number,sender).await.unwrap();
         let add_qd_clone = Arc::clone(&service);
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            while let Some(output) = receiver.recv().await
-            {
-                info!("{:?}", output);
-            }
-        });
-        let _ = add_qd_clone.add_chunks_to_qdrant(chunks, sender).await.unwrap();
+        let mut receiver = add_qd_clone.add_chunks_to_qdrant(chunks).await.unwrap();
+        while let Some(output) = receiver.recv().await
+        {
+            info!("{:?}", output);
+        }
         let query = "Как взыскивается задолженность с налогоплательщика?";
         let context = service.search(query, 5, 5).await.unwrap();
         service.unload_embedding_models().await.unwrap();
+        service.load_generator_model().await.unwrap();
+        //до сюда доходит без ошибок, тест генерации отдельно проверю в другом тесте
         let mut receiver = service.genereate_response(query, context).await.unwrap();
         info!("GEN RESPONSE:");
         while let Some(output) = receiver.recv().await
         {
             info!("{:?}", output);
         }
-        
+    }
+
+    #[tokio::test]
+    async fn test_search_and_gen()
+    {
+        logger::init();
+        let emb_cfg = Arc::new(EmbeddingConfiguration::default());
+        let service = Arc::new(super::Service::new(emb_cfg).await.unwrap());
+        service.load_embedding_models().await.unwrap();
+        service.init_qdrant().await.unwrap();
+        let query = "Как взыскивается задолженность с налогоплательщика?";
+        let context = service.search(query, 5, 5).await.unwrap();
+        service.unload_embedding_models().await.unwrap();
+        service.load_generator_model().await.unwrap();
+        let mut receiver = service.genereate_response(query, context).await.unwrap();
+        info!("GEN RESPONSE:");
+        while let Some(output) = receiver.recv().await
+        {
+            info!("{:?}", output);
+        }
     }
 }

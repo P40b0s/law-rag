@@ -25,9 +25,19 @@ impl SSEService
         self.0.fanout.subscribe()
     }
 
-    pub fn load_chunk_process(&self, process: ChunkProcess)
+    pub fn process(&self, chunk_process: ChunkProcess)
     {
-        let command = SSECommand::LoadChunk { doc_uri: process.uri.clone(), process };
+        let command = SSECommand::Process { doc_hash: chunk_process.hash.clone(), chunk: chunk_process };
+        self.0.send_command(command);
+    }
+    pub fn message(&self, msg: String)
+    {
+        let command = SSECommand::Message { message: msg };
+        self.0.send_command(command);
+    }
+    pub fn generator_message(&self, msg: String)
+    {
+        let command = SSECommand::GeneratorMessage { message: msg };
         self.0.send_command(command);
     }
 }
@@ -38,7 +48,9 @@ impl SSEService
 #[serde(rename_all="snake_case")]
 pub enum SSECommand
 {
-    LoadChunk { doc_uri: String, process: ChunkProcess },
+    Process { doc_hash: String, chunk: ChunkProcess },
+    Message {message: String},
+    GeneratorMessage {message: String}
 }
 
 
