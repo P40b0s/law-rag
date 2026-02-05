@@ -1,8 +1,8 @@
 use std::{collections::HashMap, sync::{Arc, atomic::AtomicBool}};
 
-use database::SearchResult;
+use database::{DocumentCardDbo, SearchResult, ServiceStatus};
 use embedding::RerankResult;
-use rag_service::{Chunk, Document};
+use rag_service::{Chunk, Document, DocumentCard, ModelsState};
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::error;
 use utilites::Date;
@@ -30,16 +30,75 @@ impl DocumentsService
             embedding_in_progress: Arc::new(AtomicBool::new(false))
         }
     }
+    //получаем документ от строннего апи и сразу чанкуем его
     pub async fn get_document(&self, date: Date, number: &str) -> Result<Document, Error>
     {
         let (sender, mut receiver) = unbounded_channel();
         let sse_service = self.sse_service.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = receiver.recv().await
+            {
+                sse_service.status_message(msg);
+            }
+        });
         let chunks = self.rag_service.get_chunks(date, number, sender).await?;
-        while let Some(msg) = receiver.recv().await
-        {
-            sse_service.process(msg);
-        }
         Ok(chunks.into())
+    }
+
+    //получаем документ от строннего апи и сразу чанкуем его и добавляем в sqlite
+    pub async fn get_document_and_add_to_db(&self, date: Date, number: &str) -> Result<DocumentCard, Error>
+    {
+        let document = self.get_document(date, number).await?;
+        let _ = self.database_service.add_document(&document).await?;
+        let card: DocumentCard = document.into();
+        Ok(card)
+    }
+    pub async fn delete_document(&self, hash: &str) -> Result<(), Error>
+    {
+        let _ = self.database_service.delete(hash).await?;
+        let _ = self.rag_service.delete_document_from_qdrant(hash).await?;
+        Ok(())
+    }
+
+    pub async fn load_generator_model(&self) -> Result<ModelsState, Error>
+    {
+        let state = self.rag_service.load_generator_model().await?;
+        Ok(state)
+    }
+    pub async fn unload_generator_model(&self) -> Result<ModelsState, Error>
+    {
+        let state = self.rag_service.unload_generator_model().await?;
+        Ok(state)
+    }
+    pub async fn load_embedding_model(&self) -> Result<ModelsState, Error>
+    {
+        let state = self.rag_service.load_embedding_models().await?;
+        Ok(state)
+    }
+    pub async fn unload_embedding_model(&self) -> Result<ModelsState, Error>
+    {
+        let state = self.rag_service.unload_embedding_models().await?;
+        Ok(state)
+    }
+    pub async fn embedding_document_from_sqlite(&self, hash: &str) -> Result<(), Error>
+    {
+        let document = self.database_service.get_document(hash).await?;
+        if self.embedding_in_progress.load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(Error::EmbeddingInProgress(document.document_hash));
+        }
+        let rag_service = self.rag_service.clone();
+        let sse_service = self.sse_service.clone();
+        let process_flag = self.embedding_in_progress.clone();
+        let mut receiver = rag_service.add_chunks_to_qdrant(document.chunks).await?;
+        tokio::task::spawn(async move {
+            while let Some(msg) = receiver.recv().await
+            {
+                sse_service.status_message(msg);
+            }
+            process_flag.store(false, std::sync::atomic::Ordering::Release);
+        });
+        Ok(())
     }
 
     ///Создание эмбеддингов и сохранение в бд qdrant, возвращаем управление сразу, рельтат передается через sse service
@@ -56,17 +115,18 @@ impl DocumentsService
         tokio::task::spawn(async move {
             while let Some(msg) = receiver.recv().await
             {
-                sse_service.process(msg);
+                sse_service.status_message(msg);
             }
             process_flag.store(false, std::sync::atomic::Ordering::Release);
         });
         Ok(())
     }
     ///ждем результата
-    pub async fn search_context(&self, query: &str, limit: usize, rerenker_limit: usize) -> Result<Vec<RerankResult<SearchResult>>, Error>
+    pub async fn search_context(&self, query: &str, limit: usize, reranker_limit: usize) -> Result<Vec<RerankResult<SearchResult>>, Error>
     {
-        self.sse_service.message(format!("Идет процесс поиска контекста по запросу `{}`, это может занять несколько минут", query));
-        let context = self.rag_service.search(query, limit, rerenker_limit).await?;
+        let msg = ServiceStatus::mesage(format!("Идет процесс поиска контекста по запросу `{}`, это может занять несколько минут", query));
+        self.sse_service.status_message(msg);
+        let context = self.rag_service.search(query, limit, reranker_limit).await?;
         Ok(context)
     }
     ///возвращаем управление сразу, клиент получает данные по sse service
@@ -74,12 +134,14 @@ impl DocumentsService
     {
         let rag_service = self.rag_service.clone();
         let sse_service = self.sse_service.clone();
-        sse_service.message(format!("Идет процесс генерации ответа на вопрос `{}`, из контекста, это может занять несколько десятков минут", query));
+        let msg = ServiceStatus::mesage(format!("Идет процесс генерации ответа на вопрос `{}`, из контекста, это может занять несколько десятков минут", query));
+        sse_service.status_message(msg);
         let mut receiver = rag_service.genereate_response(query, context).await?;
         tokio::task::spawn(async move {
             while let Some(msg) = receiver.recv().await
             {
-                sse_service.generator_message(msg);
+                let msg = ServiceStatus::mesage(msg);
+                sse_service.status_message(msg);
             }
         });
         Ok(())

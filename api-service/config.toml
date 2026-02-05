@@ -1,0 +1,20 @@
+origins = [
+    "http://localhost:8080",
+    "http://localhost:8081",
+    "http://localhost:80",
+]
+server_port = 8081
+
+
+[embedding_configuration]
+retriver_model_path = "/home/phobos/projects/rust/law-rag/model/pytorch_model.bin"
+retriver_config_path = "/home/phobos/projects/rust/law-rag/model/config.json"
+retriver_tokenizer_path = "/home/phobos/projects/rust/law-rag/model/tokenizer.json"
+
+reranker_model_path = "/home/phobos/projects/rust/law-rag/model/reranker/model.safetensors"
+reranker_config_path = "/home/phobos/projects/rust/law-rag/model/reranker/config.json"
+reranker_tokenizer_path = "/home/phobos/projects/rust/law-rag/model/reranker/tokenizer.json"
+
+generator_model_path = "/home/phobos/projects/rust/law-rag/model/generator/llama3/model-q4_K.gguf"
+generator_config_path = "/home/phobos/projects/rust/law-rag/model/generator/llama3/config.json"
+generator_tokenizer_path = "/home/phobos/projects/rust/law-rag/model/generator/llama3/tokenizer.json"

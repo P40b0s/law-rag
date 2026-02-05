@@ -1,5 +1,5 @@
 import { DateTime } from "@/services/date";
-import { z } from "zod";
+import z from "zod/v3";
 
 // export const date_time_schema = z.custom<Date|string|number>().refine((val) => 
 //     {

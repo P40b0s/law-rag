@@ -1,12 +1,8 @@
 <template lang="pug">
+model-state
 n-tabs.tabs(type="line" animated )
-    n-tab-pane(name="clinics" tab="Список документов")
-      document-loader
-    n-tab-pane(name="departments" tab="Отделы")
-        
-    n-tab-pane(name="statuses" tab="Статусы сотрудников")
-       
-    n-tab-pane(name="properties" tab="Свойства сотрудников")
+    n-tab-pane(name="documents" tab="Документы")
+    n-tab-pane(name="queries" tab="Запросы")
         
 </template>
     
@@ -15,11 +11,15 @@ import { ref, type Component, watch, inject, onMounted, onUnmounted, computed, o
 import { type Events, type Emitter } from '../services/emitter';
 import { NForm, NTabs, NTabPane, NFormItem, NInput, NButton, darkTheme } from 'naive-ui';
 import { notify_service } from '@/services/notification_service';
-import DocumentLoader from '../components/DocumentLoader.vue';
+import ModelState from '@/components/ModelState.vue';
+import { http_sevice } from '@/services/http_service/http_service';
 //import  user_service  from '../services/user_service';
 </script>
 <script lang="ts" setup>
 const emitter = inject<Emitter<Events>>('emitter') as Emitter<Events>;
+onMounted(async () => {
+    await http_sevice.model_state_service.get_state()
+})
 </script>
     
 <style lang="scss" scoped>

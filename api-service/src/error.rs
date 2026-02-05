@@ -2,6 +2,7 @@ use axum::{http::{HeaderMap, StatusCode}, response::{IntoResponse, Response}};
 use jwt_authentification::{Cookie, Duration as CookieMaxLife};
 use serde::Serialize;
 use thiserror::Error;
+use tracing::error;
 use utilites::Date;
 
 #[derive(Error, Debug)]
@@ -57,13 +58,13 @@ impl IntoResponse for Error
             Error::IoError(e) =>
             {
                 let body = e.to_string();
-                logger::error!("{:?}", &body);
+                error!("{:?}", &body);
                 ServerErrorResponse::new(StatusCode::BAD_REQUEST, body).into_response()
             },
             _ => 
             {
                 let body = self.to_string();
-                logger::error!("{:?}", &body);
+                error!("{:?}", &body);
                 ServerErrorResponse::new(StatusCode::BAD_REQUEST, body).into_response()
             }
         }

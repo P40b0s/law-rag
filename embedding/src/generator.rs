@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{path::Path, sync::{Arc, atomic::{AtomicU32, AtomicUsize}}};
 use anyhow::{Context, anyhow};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
 use futures::future::BoxFuture;
@@ -68,7 +68,8 @@ pub struct Generator
     system_prompt: String,
     model: Option<ModelWeights>,
     tokenizer: Option<tokenizers::Tokenizer>,
-    device: Device
+    device: Device,
+    size: AtomicUsize
 }
 
 impl Generator
@@ -84,7 +85,9 @@ impl Generator
             system_prompt: "Ты - ассистент RAG системы, ты должен отвечать на вопросы пользователей используя ТОЛЬКО предоставленный контекст для формирования ответа. начало ответа должно звучать так: `На основе имеющейся у меня информации: {далее идет твой ответ}`.  Если в контексте нет информации, скажи: \"Не могу ответить на основе имеющейся информации\"".to_owned(),
             model: None,
             tokenizer: None,
-            device
+            device,
+            size: AtomicUsize::new(0)
+            
         };
         let slf = slf.load_tokenizer()?;
         Ok(slf)
@@ -108,17 +111,31 @@ impl Generator
             format!("{:.2}GB", size_in_bytes as f64 / 1e9)
         }
     }
+    pub fn get_size_in_bytes(&self) -> usize
+    {
+        self.size.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    pub fn get_system_prompt(&self) -> &str
+    {
+        &self.system_prompt
+    }
+    pub fn model_is_loaded(&self) -> bool
+    {
+        self.model.is_some()
+    }
     async fn load_tensors(&self) -> anyhow::Result<(Content, File)>
     {
         let start = std::time::Instant::now();
         let path = self.settings.generator_model_path.clone();
-        let model = tokio::task::spawn_blocking(move ||
+        
+        let model: Result<(Content, File, usize), anyhow::Error> = tokio::task::spawn_blocking(move ||
         {
             let mut file = std::fs::File::open(&path)?;
+            let mut total_size_in_bytes = 0;
             let content = 
             {
                 let model = gguf_file::Content::read(&mut file).map_err(|e| e.with_path(path))?;
-                let mut total_size_in_bytes = 0;
+               
                 for (_, tensor) in model.tensor_infos.iter() 
                 {
                     let elem_count = tensor.shape.elem_count();
@@ -133,9 +150,11 @@ impl Generator
                 );
                 model
             };
-            Ok((content, file))
+            Ok((content, file, total_size_in_bytes))
         }).await?;
-        model
+        let (content, file, size) = model?;
+        self.size.store(size, std::sync::atomic::Ordering::Relaxed);
+        Ok((content, file))
     }
     fn get_device(&self) -> &Device
     {
@@ -146,6 +165,7 @@ impl Generator
         let (content, mut file) = self.load_tensors().await?;
         let device = self.get_device();
         let model = ModelWeights::from_gguf(content,  &mut file, device)?;
+        
         info!("model built");
         self.model = Some(model);
         Ok(self)

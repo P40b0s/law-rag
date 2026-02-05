@@ -8,7 +8,7 @@ use qdrant_client::qdrant::{
     Condition, CreateCollectionBuilder, FieldCondition, Filter, PointId, PointStruct, ScoredPoint, SearchPoints, SearchPointsBuilder, UpsertPointsBuilder, Value, WithPayloadSelector
 };
 use qdrant_client::Qdrant;
-use crate::chunk_process::ChunkProcess;
+use crate::service_status::ServiceStatus;
 use crate::error::{Result, Error};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -131,7 +131,7 @@ impl<'model> QdrantManager<'model>
     pub async fn add_chunks_to_qdrant(
         &self,
         chunks: Vec<Chunk>,
-        sender: tokio::sync::mpsc::UnboundedSender<ChunkProcess>
+        sender: tokio::sync::mpsc::UnboundedSender<ServiceStatus>
     ) -> Result<Vec<String>> {
         let mut all_ids = Vec::new();
         let chunks_count = chunks.len();
@@ -140,10 +140,10 @@ impl<'model> QdrantManager<'model>
         for (i, chunk) in chunks.into_iter().enumerate()
         {
             let batch_ids = self.process_batch(chunk, chunks_count, i, sender.clone()).await
-                .map_err(|e| ChunkProcess::error(doc_hash.clone(), e));
+                .map_err(|e| ServiceStatus::error(doc_hash.clone(), e));
             if let Err(e) = batch_ids
             {
-                let error = Error::AnyhowError(anyhow::anyhow!(e.status.clone()));
+                let error = Error::AnyhowError(anyhow::anyhow!(e.message.clone()));
                 let _ = sender.send(e);
                 return Err(error);
             }
@@ -157,7 +157,7 @@ impl<'model> QdrantManager<'model>
         Ok(all_ids)
     }
     
-    async fn process_batch(&self, chunk: Chunk, count: usize, current: usize, sender: tokio::sync::mpsc::UnboundedSender<ChunkProcess>) -> Result<Vec<String>> 
+    async fn process_batch(&self, chunk: Chunk, count: usize, current: usize, sender: tokio::sync::mpsc::UnboundedSender<ServiceStatus>) -> Result<Vec<String>> 
     {
         let mut points = Vec::new();
         let dimension = self.embedding_client.dimension();
@@ -169,7 +169,7 @@ impl<'model> QdrantManager<'model>
         {
             return Err(Error::VectorSizeError(dimension, embeddings.len()));
         }
-        let process = ChunkProcess::process_qdrant(
+        let process = ServiceStatus::process_qdrant(
             &chunk.hash,
             current,
             count

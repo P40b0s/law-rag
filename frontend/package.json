@@ -10,11 +10,11 @@
     "tsc": "vue-tsc"
   },
   "dependencies": {
+    "@globalart/oxide": "^1.0.1",
     "@vuepic/vue-datepicker": "^12.1.0",
     "apexcharts": "^5.3.5",
     "dompurify": "^3.2.7",
     "naive-ui": "2.43.1",
-    "option-t": "54.2.3",
     "strict-event-emitter": "^0.5.1",
     "ts-pattern": "5.8.0",
     "uuidv7": "1.1.0",

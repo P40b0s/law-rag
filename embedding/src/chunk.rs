@@ -471,8 +471,11 @@ pub struct Chunk
     pub hash: String,
     pub path: String,
     pub content: String,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub links_hashes: Option<Vec<String>>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub embeddings: Option<Vec<f32>>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub meta: Option<ChunkMeta>
 }
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]

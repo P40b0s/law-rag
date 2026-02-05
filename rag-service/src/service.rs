@@ -1,12 +1,24 @@
 use std::{collections::HashMap, sync::{Arc, atomic::AtomicBool}};
-use database::{ChunkProcess, QdrantConfig, QdrantManager, SearchResult};
+use database::{ServiceStatus, QdrantConfig, QdrantManager, SearchResult};
 use embedding::{BgeReranker, Chunk, ChunkMeta, Chunker, EmbeddingConfiguration, Embeddings, Generator, ModelPrompt, RerankResult};
+use serde::Serialize;
 use tokio::sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender}};
 use tracing::{debug, error, info, warn};
 use utilites::Date;
 
 use crate::{Error, html_converter::HtmlConverter};
 
+#[derive(Debug, Serialize)]
+pub struct ModelsState
+{
+    retriver: bool,
+    reranker: bool,
+    generator: bool,
+    #[serde(skip_serializing_if="Option::is_none")]
+    system_prompt: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    model_size: Option<usize>
+}
 pub struct Service
 {
     embedding_config: Arc<EmbeddingConfiguration>,
@@ -34,12 +46,35 @@ impl Service
         };
        Ok(slf)
     }
-    pub async fn load_generator_model(&self) -> Result<(), Error>
+    pub async fn models_state(&self) -> ModelsState
     {
+        let retriver_lock = self.retriver.read().await;
+        let retriver = retriver_lock.is_some();
+        drop(retriver_lock);
+        let reranker_lock = self.reranker.read().await;
+        let reranker = reranker_lock.is_some();
+        drop(reranker_lock);
+        let gen_lock = self.generator.read().await;
+        let generator = gen_lock.as_ref().is_some_and(|g| g.model_is_loaded());
+        let system_prompt = gen_lock.as_ref().and_then(|g| Some(g.get_system_prompt().to_owned()));
+        let model_size = gen_lock.as_ref().and_then(|g| Some(g.get_size_in_bytes()));
+        ModelsState
+        {
+            reranker,
+            retriver,
+            generator,
+            system_prompt,
+            model_size
+        }
+    }
+    pub async fn load_generator_model(&self) -> Result<ModelsState, Error>
+    {
+        //TODO нужен ли здесь атомик вообще или сделать все состояния в атомиках чтобы не использовать лишний раз доступ к локам
         if self.generator_model_is_load.load(std::sync::atomic::Ordering::Relaxed)
         {
             warn!("Generator model already loaded");
-            Ok(())
+            let state = self.models_state().await;
+            Ok(state)
         }
         else 
         {
@@ -52,7 +87,8 @@ impl Service
                 *lock = Some(with_model);
                 self.generator_model_is_load.store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            Ok(())
+            let state = self.models_state().await;
+            Ok(state)
         }
     }
     fn qdrant_config(&self) -> QdrantConfig
@@ -90,7 +126,7 @@ impl Service
     }
     //tokio spawn inside, may be long operation
     //progress messages and errors sends via sender
-    pub async fn add_chunks_to_qdrant(self: Arc<Self>, chunks: Vec<Chunk>) -> Result<UnboundedReceiver<ChunkProcess>, Error>
+    pub async fn add_chunks_to_qdrant(self: Arc<Self>, chunks: Vec<Chunk>) -> Result<UnboundedReceiver<ServiceStatus>, Error>
     {
         let cfg = self.qdrant_config();
         let drop_service = self;
@@ -123,7 +159,7 @@ impl Service
                     }
                     else
                     {
-                        let _ = sender.send(ChunkProcess::qdrant_error(qm.err().unwrap()));
+                        let _ = sender.send(ServiceStatus::qdrant_error(qm.err().unwrap()));
                     }
                 }
             }
@@ -178,7 +214,7 @@ impl Service
         // result
     }
 
-    pub async fn load_embedding_models(&self) -> Result<(), Error>
+    pub async fn load_embedding_models(&self) -> Result<ModelsState, Error>
     {
         let mut lock_retriver = self.retriver.write().await;
         let mut lock_reranker = self.reranker.write().await;
@@ -195,9 +231,11 @@ impl Service
                 .map_err(|e| Error::EmbeddingModelLoadError { source: e })?;
             *lock_reranker = Some(reranker);
         }
-        Ok(())
+        drop(lock_reranker);
+        let state = self.models_state().await;
+        Ok(state)
     }
-    pub async fn unload_generator_model(&self) -> Result<(), Error>
+    pub async fn unload_generator_model(&self) -> Result<ModelsState, Error>
     {
         let mut lock = self.generator.write().await;
         let mut generator = lock.as_mut();
@@ -206,25 +244,42 @@ impl Service
             generator.unload_model();
             self.generator_model_is_load.store(false, std::sync::atomic::Ordering::Relaxed);
         }
-        Ok(())
+        drop(lock);
+        let state = self.models_state().await;
+        Ok(state)
     }
-    pub async fn unload_embedding_models(&self) -> Result<(), Error>
+    pub async fn unload_embedding_models(&self) -> Result<ModelsState, Error>
     {
         let mut lock = self.retriver.write().await;
         *lock = None;
         let mut lock = self.reranker.write().await;
         *lock = None;
+        drop(lock);
+        let state = self.models_state().await;
+        Ok(state)
+    }
+
+    pub async fn load_all(&self) -> Result<ModelsState, Error>
+    {
+        let _generator = self.load_generator_model().await?;
+        let last_state = self.load_embedding_models().await?;
+        let _ = self.init_qdrant().await?;
+        Ok(last_state)
+    }
+
+    pub async fn delete_document_from_qdrant(&self, hash: &str) -> Result<(), Error>
+    {
+        let reranker = self.reranker.read().await;
+        let rer = reranker.as_ref().ok_or(Error::RerankerModelLoadError)?;
+        let retriver = self.retriver.read().await;
+        let ret = retriver.as_ref().ok_or(Error::RetriverModelLoadError)?;
+        let qm = QdrantManager::new(self.qdrant_config(), ret, rer).await
+            .inspect_err(|e| error!("Error creating QdrantManager: {}", e))?;
+        let _ = qm.delete_document(hash).await?;
         Ok(())
     }
 
-    pub async fn load_all(&self) -> Result<(), Error>
-    {
-        let _generator = self.load_generator_model().await?;
-        let _qdrant = self.load_embedding_models().await?;
-        let _ = self.init_qdrant().await?;
-        Ok(())
-    }
-    pub async fn get_chunks(&self, sign_date: Date, number: &str, sender: UnboundedSender<ChunkProcess>) -> Result<Vec<Chunk>, Error>
+    pub async fn get_chunks(&self, sign_date: Date, number: &str, sender: UnboundedSender<ServiceStatus>) -> Result<Vec<Chunk>, Error>
     {
         let model = self.retriver.read().await;
         if model.is_none()
@@ -268,7 +323,7 @@ impl Service
                         token_count: text.token_count
                     })
                 };
-                let _ = sender.send(ChunkProcess::process_chunk(hash, current, count));
+                let _ = sender.send(ServiceStatus::process_chunk(hash, current, count));
                 chunks.push(chunk);
                 current +=1;
             }

@@ -12,9 +12,10 @@ use tracing::info;
 pub use utilites::Date;
 pub use embedding::{Chunk, ChunkMeta, ChunkedText, Embeddings, Chunker};
 use html_converter::HtmlConverter;
-pub use document::Document;
+pub use document::{Document, DocumentCard};
 pub use error::Error;
-pub use service::Service;
+pub use service::{Service, ModelsState};
+pub use database::ServiceStatus;
 
 //TODO перенести всю логику запроса и его обработки сюда в том числе вычисление эмбеддингов 
 #[cfg(test)]

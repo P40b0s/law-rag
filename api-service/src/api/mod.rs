@@ -5,23 +5,25 @@ mod documents;
 mod types;
 pub use static_files_router::static_router;
 pub use router::router;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use utilites::Date;
 use uuid::Uuid;
 
+
 #[derive(Debug, Deserialize)]
-pub struct DocumentsRequest
+pub struct DocumentRequest
 {
-    date: String,
-    limit: u32,
-    offset: u32
+    sign_date: Date,
+    number: String,
 }
 #[derive(Debug, Deserialize)]
-pub struct PacketDocumentsRequest
+pub struct GenerationRequest
 {
-    packet_id: String,
-    limit: u32,
-    offset: u32
+    query: String,
+    limit: usize,
+    reranker_limit: usize
 }
+
 
 #[derive(Debug, Deserialize)]
 pub struct CountRequest
@@ -70,6 +72,7 @@ pub fn with_api_version(version: ApiVersion, path: &'static str) -> String
 {
     [version.as_ref(), path].concat()
 }
+/// /api_v{version number}
 pub enum ApiVersion 
 {
     V1,

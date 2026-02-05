@@ -1,9 +1,10 @@
 use std::{convert::Infallible, sync::Arc};
-use database::ChunkProcess;
+use rag_service::{ServiceStatus};
 use serde::Serialize;
 use futures_util::stream::Stream;
 use axum::{extract::State, response::sse::{Event, KeepAlive, Sse}};
 use tokio::sync::broadcast;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::{state::AppState};
@@ -25,19 +26,9 @@ impl SSEService
         self.0.fanout.subscribe()
     }
 
-    pub fn process(&self, chunk_process: ChunkProcess)
+    pub fn status_message(&self, status: ServiceStatus)
     {
-        let command = SSECommand::Process { doc_hash: chunk_process.hash.clone(), chunk: chunk_process };
-        self.0.send_command(command);
-    }
-    pub fn message(&self, msg: String)
-    {
-        let command = SSECommand::Message { message: msg };
-        self.0.send_command(command);
-    }
-    pub fn generator_message(&self, msg: String)
-    {
-        let command = SSECommand::GeneratorMessage { message: msg };
+        let command = SSECommand::StatusMessage { status };
         self.0.send_command(command);
     }
 }
@@ -48,9 +39,7 @@ impl SSEService
 #[serde(rename_all="snake_case")]
 pub enum SSECommand
 {
-    Process { doc_hash: String, chunk: ChunkProcess },
-    Message {message: String},
-    GeneratorMessage {message: String}
+    StatusMessage {status: ServiceStatus},
 }
 
 
@@ -102,7 +91,7 @@ impl Broadcaster
     {
         if let Err(e) = self.fanout.send(event)
         {
-            logger::warn!("Ошибка отправки сообщения, нет ни одного подключенного клиента {}", e.to_string())
+            warn!("Ошибка отправки сообщения, нет ни одного подключенного клиента {}", e.to_string())
         }
     }
 }

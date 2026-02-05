@@ -1,5 +1,5 @@
 use std::{net::SocketAddr, sync::Arc};
-use logger::debug;
+use tracing::debug;
 use crate::state::AppState;
 use crate::api::router;
 
@@ -17,10 +17,12 @@ pub async fn start() -> Result<(), crate::Error>
 #[cfg(test)]
 mod tests
 {
+    use crate::logger;
+
     #[tokio::test]
     async fn test_running()
     {
-        logger::StructLogger::new_default();
+        logger::init();
         super::start().await;
         loop 
         {

@@ -19,7 +19,7 @@ pub struct DocumentDbo
     pub has_embeddings: bool,
     pub chunks_count: u32,
     pub chunks: Vec<Chunk>,
-    pub status: u8,
+    pub status: DocumentStatus,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DocumentCardDbo
@@ -31,7 +31,7 @@ pub struct DocumentCardDbo
     pub document_sign_date: Date,
     pub has_embeddings: bool,
     pub chunks_count: u32,
-    pub status: u8,
+    pub status: DocumentStatus,
 }
 
 impl FromRow<'_, SqliteRow> for DocumentDbo 
@@ -58,7 +58,7 @@ impl FromRow<'_, SqliteRow> for DocumentDbo
             document_sign_date,
             has_embeddings,
             chunks_count,
-            status,
+            status: status.into(),
             chunks
         };
         Ok(obj)
@@ -87,7 +87,7 @@ impl FromRow<'_, SqliteRow> for DocumentCardDbo
             document_sign_date,
             has_embeddings,
             chunks_count,
-            status,
+            status: status.into(),
         };
         Ok(obj)
     }
@@ -293,7 +293,8 @@ impl DocumentsTable
         chunks: &[Chunk]) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>
     {
         let status: u8 = status.into();
-        let chunks = serde_json::to_string(chunks).inspect_err(|e| error!("{e}")).unwrap_or(String::from("[]"));
+        let chunks = serde_json::to_string(chunks).inspect_err(|e| error!("{e}"))
+            .unwrap_or(String::from("'[]'"));
         Box::pin(async move 
         {
             let connection = Arc::clone(&self.connection);
@@ -303,7 +304,7 @@ impl DocumentsTable
                 ,DocumentsTable::name()
                 ," ("
                 ,"document_uri, document_hash, document_title, document_number, document_sign_date, status, has_embeddings, chunks_count, chunks"
-                ,") VALUES (?,?,?,?,?,?,?,?,?)"
+                ,") VALUES (?,?,?,?,?,?,?,?,json(?))"
             ].concat();
             let _ = sqlx::query(&sql)
             .bind(uri)
@@ -348,12 +349,13 @@ mod tests
         let del = table.delete_document("FE7463FFGEGDGE").await.unwrap();
     }
 }
-
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum DocumentStatus
 {
     NotLoaded,
     Loaded,
-    Embedded
+    Embedded,
+    Unknown
 }
 impl From<DocumentStatus> for u8
 {
@@ -363,7 +365,35 @@ impl From<DocumentStatus> for u8
         {
             DocumentStatus::NotLoaded => 0,
             DocumentStatus::Loaded => 1,
-            DocumentStatus::Embedded => 2
+            DocumentStatus::Embedded => 2,
+            DocumentStatus::Unknown => u8::MAX
+        }
+    }
+}
+
+impl From<u8> for DocumentStatus
+{
+    fn from(value: u8) -> Self 
+    {
+        match value
+        {
+            0 => DocumentStatus::NotLoaded,
+            1 => DocumentStatus::Loaded,
+            2 => DocumentStatus::Embedded,
+            _ => DocumentStatus::Unknown,
+        }
+    }
+}
+impl AsRef<str> for DocumentStatus
+{
+    fn as_ref(&self) -> &str 
+    {
+        match self
+        {
+            DocumentStatus::Loaded => "Loaded",
+            DocumentStatus::Embedded => "Embedded",
+            DocumentStatus::NotLoaded => "NotLoaded",
+            DocumentStatus::Unknown => "Unknown"
         }
     }
 }

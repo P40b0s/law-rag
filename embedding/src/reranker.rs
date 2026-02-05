@@ -75,6 +75,7 @@ impl Model for BgeReranker
             .context(format!("Error load reranker model from file {}", emb_cfg.retriver_model_path.display()))?;
         let result: Result<BertModel> = tokio::task::spawn_blocking(move ||
         {
+            
             let model = BertModel::load(vb, &config).context("Error load reranker model")?;
             info!("reranker model {} loaded in {:?}", model_name, start.elapsed());
             Ok(model)

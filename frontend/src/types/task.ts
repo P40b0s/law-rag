@@ -3,24 +3,6 @@ import { date_time_schema } from "./date_schema"
 import Tasks from '@/views/Tasks.vue';
 import { DateTime } from "@/services/date";
 
-// export interface Task 
-// {
-//   id: string
-//   title: string
-//   description: string
-//   //задача может быть сформирована но еще не назначена на отдел
-//   department_id?: string
-//   // массив ID пользователей, ответственных за задачу
-//   users: string[], 
-//   status: 'todo' | 'in_progress' | 'done'
-//   priority: 'low' | 'medium' | 'high'
-//   target_date: Date,
-//   changed_by?: [string, Date] // [userId, date]
-//   added_by: [string, Date]
-//   note: string,
-//   files: TaskFile[],
-//   tags: string[],
-// }
 const TaskFileSchema = z.object(
 {
   id: z.uuid(),

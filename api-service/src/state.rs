@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use embedding::EmbeddingConfiguration;
-use logger::error;
+use tracing::error;
 use rag_service::Service;
 use uuid::Uuid;
 
@@ -25,11 +25,9 @@ impl AppState
     //TODO пробросить все конфигурации через главную
     pub async fn initialize() -> Result<AppState, crate::Error>
     {
-        let configuration = Arc::new(Configuration::load());
+        let configuration = Arc::new(Configuration::new()?);
         let sse_service = Arc::new(SSEService::new());
-        //FIXME убрать
-        let emb_cfg = Arc::new( EmbeddingConfiguration::default());
-        let rag_service = Arc::new(Service::new(emb_cfg).await?);
+        let rag_service = Arc::new(Service::new(configuration.embedding_configuration.clone()).await?);
         let database_service = Arc::new(DatabaseService::new().await?);
         let documents_service = Arc::new(DocumentsService::new(rag_service.clone(), database_service.clone(), sse_service.clone()));
         let services = Services

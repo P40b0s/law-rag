@@ -7,10 +7,11 @@ mod types;
 pub use error::Error;
 pub mod services;
 mod api;
+mod logger;
 
 #[tokio::main]
 async fn main() 
 {
-    let _ = logger::StructLogger::new_custom(logger::LevelFilter::Info, None);
+    let _ = logger::init();
     let _ = server::start().await;
 }

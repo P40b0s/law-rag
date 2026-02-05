@@ -1,4 +1,4 @@
-use database::{DocumentCardDbo, DocumentDbo};
+use database::{DocumentCardDbo, DocumentDbo, DocumentStatus};
 use embedding::{Chunk, ChunkMeta, Chunker, RetriverModel};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
@@ -17,7 +17,7 @@ pub struct Document
     pub has_embeddings: bool,
     pub chunks_count: u32,
     pub chunks: Vec<Chunk>,
-    pub status: u8,
+    pub status: DocumentStatus,
 }
 
 impl From<DocumentDbo> for Document
@@ -34,7 +34,7 @@ impl From<DocumentDbo> for Document
             has_embeddings: value.has_embeddings,
             chunks_count: value.chunks_count,
             chunks: value.chunks,
-            status: value.status as u8
+            status: value.status
         }   
     }
 }
@@ -53,7 +53,7 @@ impl From<DocumentCardDbo> for Document
             has_embeddings: value.has_embeddings,
             chunks_count: value.chunks_count,
             chunks: Vec::with_capacity(0),
-            status: value.status as u8
+            status: value.status
         }      
     }
 }
@@ -73,11 +73,81 @@ impl From<Vec<Chunk>> for Document
             has_embeddings: false,
             chunks_count: value.len() as u32,
             chunks: value,
-            status: database::DocumentStatus::NotLoaded.into(),
+            status: database::DocumentStatus::NotLoaded,
             
         }
     }
 }
+
+///Облегченная структура для фроненда, без чанков
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DocumentCard
+{
+    pub document_uri: String,
+    pub document_hash: String,
+    pub document_title: String,
+    pub document_number: String, 
+    pub document_sign_date: Date,
+    pub has_embeddings: bool,
+    pub chunks_count: u32,
+    pub status: DocumentStatus,
+}
+
+impl From<DocumentDbo> for DocumentCard
+{
+    fn from(value: DocumentDbo) -> Self 
+    {
+        Self 
+        { 
+            document_uri: value.document_uri,
+            document_hash: value.document_hash,
+            document_title: value.document_title,
+            document_number: value.document_number,
+            document_sign_date: value.document_sign_date,
+            has_embeddings: value.has_embeddings,
+            chunks_count: value.chunks_count,
+            status: value.status
+        }   
+    }
+}
+impl From<Document> for DocumentCard
+{
+    fn from(value: Document) -> Self 
+    {
+        Self 
+        { 
+            document_uri: value.document_uri,
+            document_hash: value.document_hash,
+            document_title: value.document_title,
+            document_number: value.document_number,
+            document_sign_date: value.document_sign_date,
+            has_embeddings: value.has_embeddings,
+            chunks_count: value.chunks_count,
+            status: value.status
+        }      
+    }
+}
+
+impl From<DocumentCardDbo> for DocumentCard
+{
+    fn from(value: DocumentCardDbo) -> Self 
+    {
+        Self 
+        { 
+            document_uri: value.document_uri,
+            document_hash: value.document_hash,
+            document_title: value.document_title,
+            document_number: value.document_number,
+            document_sign_date: value.document_sign_date,
+            has_embeddings: value.has_embeddings,
+            chunks_count: value.chunks_count,
+            status: value.status
+        }      
+    }
+}
+
+
+
 
 pub async fn load_document(number: &str, date: Date, model: &RetriverModel) -> Result<Vec<Chunk>>
 {

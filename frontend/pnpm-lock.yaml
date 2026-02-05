@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@globalart/oxide':
+        specifier: ^1.0.1
+        version: 1.0.1
       '@vuepic/vue-datepicker':
         specifier: ^12.1.0
         version: 12.1.0(vue@3.5.26(typescript@5.9.3))
@@ -195,6 +198,9 @@ packages:
 
   '@floating-ui/vue@1.1.9':
     resolution: {integrity: sha512-BfNqNW6KA83Nexspgb9DZuz578R7HT8MZw1CfK9I6Ah4QReNWEJsXWHN+SdmOVLNGmTPDi+fDT535Df5PzMLbQ==}
+
+  '@globalart/oxide@1.0.1':
+    resolution: {integrity: sha512-Rs0tMakRdhRbCmzjx+asPPlfH8yMj6WKOPSlE6y5lOb6yXnwDNsJ45+Tze0m4HYPELHP4jfKuPl4DEKk5waoEg==}
 
   '@interactjs/actions@1.10.27':
     resolution: {integrity: sha512-FCRg5KwB+stkPcAMx/Cn0fgGP6p4LyMX9S/Upcn/W+hpYme31bPi54PCqmOebzz6myTthN6zFf9jMyLOqtI/gg==}
@@ -1755,6 +1761,8 @@ snapshots:
     transitivePeerDependencies:
       - '@vue/composition-api'
       - vue
+
+  '@globalart/oxide@1.0.1': {}
 
   '@interactjs/actions@1.10.27(@interactjs/core@1.10.27(@interactjs/utils@1.10.27))(@interactjs/utils@1.10.27)':
     dependencies:
