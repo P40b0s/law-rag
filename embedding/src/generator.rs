@@ -6,7 +6,7 @@ use tokenizers::Tokenizer;
 use std::fs::File;
 use tracing::{info, warn};
 use candle_core::{Device, Tensor, quantized::gguf_file::{self, Content}};
-use crate::{EmbeddingConfiguration, token_output_stream::TokenOutputStream};
+use crate::{EmbeddingConfiguration, Model, token_output_stream::TokenOutputStream};
 
 type ModelWeights = candle_transformers::models::quantized_llama::ModelWeights;
 #[derive(Debug, Clone)]
@@ -160,15 +160,14 @@ impl Generator
     {
         &self.device
     }
-    pub async fn load_model(mut self) -> anyhow::Result<Self> 
+    pub async fn load_model(&mut self) -> anyhow::Result<()> 
     {
         let (content, mut file) = self.load_tensors().await?;
         let device = self.get_device();
         let model = ModelWeights::from_gguf(content,  &mut file, device)?;
-        
         info!("model built");
         self.model = Some(model);
-        Ok(self)
+        Ok(())
     }
     pub fn unload_model(&mut self)
     {
@@ -406,7 +405,8 @@ mod tests
     {
         logger::init();
         let config = Arc::new(EmbeddingConfiguration::default());
-        let mut model = super::Generator::load(config).unwrap().load_model().await.unwrap();
+        let mut  model = super::Generator::load(config).unwrap();
+        model.load_model().await.unwrap();
         let query = "Какого цвета лицо начальника когда он сердится или не трезв?";
         let context = vec!["Обычно лицо начальника серого цвета", "Когда он выпьет лицо красного цвета", "когда он нервничает у него лицо становиться синим", "Когда сердится то становиться похож на снегиря"];
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();

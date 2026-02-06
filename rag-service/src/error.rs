@@ -17,20 +17,21 @@ pub enum Error
         source: embedding::Error
     },
     #[error("Модель retriver не была загружена")]
-    RetriverModelLoadError,
+    RetriverModelNotLoad,
     #[error("Модель reranker не была загружена")]
-    RerankerModelLoadError,
-    #[error("Ошибка загрузки модели генератора `{source}`")]
-    GeneratorModelLoadError
-    {
-        source: anyhow::Error
-    },
+    RerankerModelNotLoad,
     #[error("Модель генератора не была загружена")]
-    GeneratorModelNotLoadError,
+    GeneratorModelNotLoad,
     #[error("Ошибка загрузки модели `{source}`")]
     EmbeddingModelLoadError
     {
         source: anyhow::Error
-    }
+    },
+    #[error("Ошибка загрузки модели `{model}` -> `{source}`")]
+    ModelLoadError
+    {
+        model: String,
+        source: anyhow::Error
+    },
 
 }

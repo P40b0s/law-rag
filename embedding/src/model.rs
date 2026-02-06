@@ -7,18 +7,19 @@ use anyhow::Result;
 
 use crate::EmbeddingConfiguration;
 
-pub trait Model
+pub trait Model<M, C>
 where  Self: Sized
 {
     fn name(&self) -> &ModelName;
     fn tokenizer(&self) -> &Tokenizer;
     fn tokenizer_mut(&mut self) -> &mut Tokenizer;
-    fn config(&self) -> &Config;
+    fn config(&self) -> &C;
     fn embedding_config(&self) -> Arc<EmbeddingConfiguration>;
     fn device(&self) -> &Device;
-    fn load_model(self) -> impl std::future::Future<Output = Result<Self>> + Send;
-    fn model(&self) -> Result<&BertModel>;
-    fn unload_model(self) -> Result<()>;
+    fn load_model(&mut self) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn model(&self) -> Result<&M>;
+    fn model_is_loaded(&self) -> bool;
+    fn unload_model(&mut self);
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

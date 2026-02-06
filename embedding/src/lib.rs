@@ -3,7 +3,6 @@ mod html_converter;
 mod chunk;
 mod error;
 mod retriver;
-mod embeddings;
 mod reranker;
 mod configuration;
 mod model;
@@ -18,7 +17,6 @@ use utilites::Date;
 use html_converter::HtmlConverter;
 
 pub use chunk::{Chunk, ChunkMeta, Chunker, ChunkedText};
-pub use embeddings::Embeddings;
 pub use reranker::{BgeReranker, RerankResult};
 pub use retriver::RetriverModel;
 pub use generator::{Generator, GeneratorSettings, ModelPrompt};
@@ -35,7 +33,7 @@ mod tests
     use tokenizers::Tokenizer;
     use tracing::{debug, info};
     use utilites::Date;
-    use crate::{Chunk, EmbeddingConfiguration, Embeddings, HtmlConverter, chunk::{ChunkMeta, Chunker}, retriver::RetriverModel, logger};
+    use crate::{Chunk, EmbeddingConfiguration, HtmlConverter, chunk::{ChunkMeta, Chunker}, retriver::RetriverModel, logger};
 
     #[tokio::test]
     async fn test_converter()

@@ -89,7 +89,7 @@ pub async fn unload_embedding_model(
 -> Result<Response<Body>, Error>
 {
     let service = app_state.get_services();
-    let models_state = service.documents_service.load_embedding_model().await?;
+    let models_state = service.documents_service.unload_embedding_model().await?;
     Ok((
         StatusCode::OK,
         Json(models_state),

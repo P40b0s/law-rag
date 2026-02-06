@@ -1,83 +1,307 @@
 use std::{ops::Deref, path::{Path, PathBuf}, sync::{Arc, LazyLock, OnceLock}};
-use crate::{EmbeddingConfiguration, error::Error, model::{Model, ModelName}};
-use anyhow::{Context, Result};
-use candle_core::Device;
+use crate::{EmbeddingConfiguration, model::{Model, ModelName}};
+use anyhow::{Context, Result, anyhow};
+use candle_core::{Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::{bert::{BertModel, Config, DTYPE}};
 use serde::{Deserialize, Serialize};
 use tokenizers::{PaddingParams, Tokenizer};
 use tracing::{debug, error, info};
-
 //static MODEL: OnceLock<BertModel> = OnceLock::<BertModel>::new();
 
 
 
+/// Модель для получения векторных представлений (embeddings) текста.
+///
+/// Использует BERT-подобную архитектуру для генерации плотных векторных представлений текстов,
+/// которые затем используются для семантического поиска и ранжирования документов.
+///
+/// # Архитектура
+/// - Токенизация текста с padding до BatchLongest
+/// - Прямой проход через BERT модель
+/// - Mean pooling с учетом attention mask для получения одного вектора на текст
+/// - L2 нормализация для косинусного сходства
 pub struct RetriverModel
 {
+    /// Размерность выходного вектора эмбеддинга
     pub dimension: usize,
-    //чанкуем по `8192` токена
+    /// Максимальное количество токенов в одном чанке (обычно 8192)
     pub max_tokens: usize,
+    /// Количество токенов перекрытия между чанками для сохранения контекста
     pub overlap_tokens: usize,
+    /// Имя используемой модели
     pub model_name: ModelName,
+    /// Устройство для вычислений (CPU или CUDA)
     device: Device,
+    /// Конфигурация BERT модели
     config: Config,
+    /// Настройки путей к файлам модели
     embedding_config: Arc<EmbeddingConfiguration>,
+    /// Токенизатор для преобразования текста в токены
     tokenizer: Tokenizer,
-    model: OnceLock<BertModel>
+    /// Загруженная BERT модель (None если не загружена)
+    model: Option<BertModel>
 }
 
 
 impl RetriverModel
 {
+    /// Создает новый экземпляр RetriverModel.
+    ///
+    /// # Процесс инициализации:
+    ///
+    /// 1. **Выбор устройства**: Автоматически использует CUDA (GPU) если доступна, иначе CPU
+    /// 2. **Загрузка токенизатора**: Читает tokenizer.json из конфигурации
+    /// 3. **Настройка padding**: BatchLongest - выравнивание до самой длинной последовательности в батче
+    /// 4. **Загрузка конфигурации модели**: config.json с параметрами архитектуры BERT
+    ///
+    /// # Аргументы
+    /// * `emb_config` - Конфигурация с путями к файлам модели и токенизатора
+    ///
+    /// # Возвращает
+    /// * `Ok(RetriverModel)` - Инициализированная модель (сама BERT модель еще не загружена)
+    /// * `Err` - Если не удалось загрузить токенизатор или конфигурацию
+    ///
+    /// # Примечание
+    /// После создания нужно вызвать `load_model()` для загрузки весов BERT модели в память
     pub async fn new(emb_config: Arc<EmbeddingConfiguration>) -> Result<Self>
     {
-        info!("Try load tokenizer.json");
+        info!("Try load {}", emb_config.retriver_tokenizer_path.display());
         let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
         info!("Running on device: {:?}", &device);
         let max_tokens = 8192;
         let dimension = 1024;
+
+        // Загрузка и десериализация токенизатора
         let tokenizer_file = &emb_config.retriver_tokenizer_path;
         let tokenizer = tokio::fs::read(&tokenizer_file).await
             .context(format!("Error load tokenizer file from {}", tokenizer_file.display()))?;
         let mut tokenizer = Tokenizer::from_bytes(tokenizer)
             .map_err(|e| anyhow::anyhow!("Error deserialize tokenizer file {}", e))?;
-        let pp = PaddingParams 
+
+        // Настройка padding: BatchLongest для эффективной обработки батчей разной длины
+        let pp = PaddingParams
         {
             strategy: tokenizers::PaddingStrategy::BatchLongest,
             ..Default::default()
         };
         tokenizer.with_padding(Some(pp));
-        
+
+        // Загрузка конфигурации BERT модели
         let model_config_file = &emb_config.retriver_config_path;
         let model_config = tokio::fs::read(&model_config_file).await
             .context(format!("Error load config file from {}", model_config_file.display()))?;
         let config = serde_json::from_slice(&model_config).context("Error deserialize config file")?;
-        // let padding = PaddingParams 
-        // {
-        //     strategy: tokenizers::PaddingStrategy::Fixed(max_tokens),
-        //     direction: tokenizers::PaddingDirection::Right,
-        //     pad_to_multiple_of: None,
-        //     pad_id: 0,
-        //     pad_type_id: 0,
-        //     pad_token: "[PAD]".to_string(),
-        // };
-        // tokenizer.with_padding(Some(padding));
+
         Ok(Self
         {
             dimension,
             max_tokens,
-            overlap_tokens: (max_tokens / 10).min(256), // Максимум 256 токенов перекрытия,
+            overlap_tokens: (max_tokens / 10).min(256), // 10% от max_tokens, но не более 256
             model_name: ModelName::M3,
             config,
             embedding_config: emb_config,
             device,
             tokenizer,
-            model: OnceLock::<BertModel>::new()
+            model: None // Модель будет загружена при вызове load_model()
         })
+    }
+
+    /// Генерирует вектор эмбеддингов для массива текстов.
+    ///
+    /// # Аргументы
+    /// * `texts` - Слайс строк для генерации эмбеддингов
+    ///
+    /// # Возвращает
+    /// * `Ok(Vec<f32>)` - Вектор эмбеддингов (размерность = self.dimension)
+    /// * `Err` - Если произошла ошибка или количество текстов != 1
+    ///
+    /// # Примечание
+    /// Функция ожидает ровно один текст во входном массиве.
+    /// Для батчевой обработки используйте `embed_tensor_batch` напрямую.
+    pub async fn generate_embeddings(&self, texts: &[&str]) -> Result<Vec<f32>>
+    {
+        let tensor = self.embed_tensor_batch(texts).await?;
+        let mut vector = tensor.to_vec2()?;
+        debug!("emb vector len: {}", vector.len());
+        if vector.len() > 1
+        {
+            return Err(anyhow!("Vector Vec<Vec<f32>> is empty or bigger than 1"));
+        }
+        let first = vector.pop();
+        if let Some(first) = first
+        {
+            Ok(first)
+        }
+        else
+        {
+            return Err(anyhow!("Vector Vec<Vec<f32>> is empty or bigger than 1"));
+        }
+    }
+    /// Генерирует тензор эмбеддингов для батча текстов.
+    ///
+    /// # Процесс генерации:
+    ///
+    /// 1. **Токенизация**: Преобразование текстов в последовательности ID токенов
+    ///    - Используется padding до BatchLongest (выравнивание по самой длинной последовательности)
+    ///    - Генерируется attention_mask: 1 для реальных токенов, 0 для padding
+    ///
+    /// 2. **Создание тензоров**:
+    ///    - token_ids: ID токенов для каждого текста
+    ///    - attention_mask: маска для игнорирования padding токенов
+    ///    - token_type_ids: тип токена (для BERT, обычно все нули для одного сегмента)
+    ///
+    /// 3. **Прямой проход через BERT**: Получение контекстуализированных эмбеддингов
+    ///    - Вход: [batch_size, seq_len]
+    ///    - Выход: [batch_size, seq_len, hidden_size] (обычно hidden_size = 1024)
+    ///
+    /// 4. **Mean pooling**: Агрегация в один вектор на текст (см. `mean_pooling`)
+    ///    - Выход: [batch_size, hidden_size]
+    ///
+    /// # Аргументы
+    /// * `texts` - Слайс текстов для обработки
+    ///
+    /// # Возвращает
+    /// Тензор формы [batch_size, hidden_size] с нормализованными эмбеддингами
+    async fn embed_tensor_batch(&self, texts: &[&str]) -> Result<Tensor>
+    {
+        let start = std::time::Instant::now();
+        let device = self.device();
+        let model = self.model()?;
+
+        // Шаг 1: Токенизация всех текстов в батче
+        let tokens = self.tokenizer()
+            .encode_batch(texts.to_vec(), true)
+            .map_err(|e| anyhow!("Encode error {}", e))?;
+
+        // Шаг 2: Создание тензоров token_ids для каждого текста
+        // Преобразуем Vec<u32> (ID токенов) в Tensor и собираем в Vec<Tensor>
+        let token_ids = tokens
+            .iter()
+            .map(|tokens|
+            {
+                let tokens = tokens.get_ids().to_vec();
+                Ok(Tensor::new(tokens.as_slice(), device)?)
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        // Шаг 3: Создание тензоров attention_mask
+        // 1 = реальный токен, 0 = padding токен
+        let attention_mask = tokens
+            .iter()
+            .map(|tokens|
+            {
+                let tokens = tokens.get_attention_mask().to_vec();
+                Ok(Tensor::new(tokens.as_slice(), device)?)
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        // Шаг 4: Объединение отдельных тензоров в батч
+        // Vec<Tensor[seq_len]> -> Tensor[batch_size, seq_len]
+        let token_ids = Tensor::stack(&token_ids, 0)?;
+        let attention_mask = Tensor::stack(&attention_mask, 0)?;
+
+        // Создаем token_type_ids (все нули для single-segment задач)
+        let token_type_ids = token_ids.zeros_like()?;
+
+        info!("running inference {:?}", token_ids.shape());
+
+        // Шаг 5: Прямой проход через BERT модель
+        // [batch, seq_len] -> [batch, seq_len, hidden_size]
+        let embeddings = model.forward(&token_ids, &token_type_ids, Some(&attention_mask))?;
+        info!("generated embeddings {:?}", embeddings.shape());
+
+        // Шаг 6: Mean pooling для получения одного вектора на текст
+        // [batch, seq_len, hidden] -> [batch, hidden]
+        let embeddings = Self::mean_pooling(&embeddings, &attention_mask)?;
+        info!("pooled embeddings {:?} in {:?} s", embeddings.shape(), start.elapsed());
+
+        Ok(embeddings)
+    }
+
+    /// Выполняет mean pooling эмбеддингов с учетом attention mask и L2 нормализацию.
+    ///
+    /// # Что происходит внутри:
+    ///
+    /// 1. **Подготовка маски** (`unsqueeze(2)`):
+    ///    - Исходная форма attention_mask: [batch_size, seq_len]
+    ///    - После unsqueeze: [batch_size, seq_len, 1]
+    ///    - Это позволяет применить маску к каждой размерности эмбеддинга
+    ///
+    /// 2. **Вычисление количества реальных токенов** (`sum(1)`):
+    ///    - sum_mask: сумма по измерению 1 (seq_len)
+    ///    - Результат: [batch_size, 1] - сколько не-padding токенов в каждом примере
+    ///
+    /// 3. **Усреднение эмбеддингов** (mean pooling):
+    ///    - Умножаем embeddings на маску: зануляем padding токены
+    ///    - Суммируем по seq_len: складываем все токены в один вектор
+    ///    - Делим на sum_mask: получаем среднее только по реальным токенам
+    ///
+    /// 4. **L2 нормализация**:
+    ///    - Вычисляем L2 норму: sqrt(sum(x²))
+    ///    - Делим каждый элемент на норму
+    ///    - Результат: вектор единичной длины (для косинусного сходства)
+    ///
+    /// # Аргументы
+    /// * `embeddings` - Тензор эмбеддингов формы [batch_size, seq_len, hidden_size]
+    /// * `attention_mask` - Маска внимания формы [batch_size, seq_len], где 1 = реальный токен, 0 = padding
+    ///
+    /// # Возвращает
+    /// Нормализованный тензор формы [batch_size, hidden_size]
+    fn mean_pooling(embeddings: &Tensor, attention_mask: &Tensor) -> Result<Tensor>
+    {
+        // Шаг 1: Преобразуем маску к типу float и добавляем размерность для broadcasting
+        // [batch, seq_len] -> [batch, seq_len, 1]
+        let attention_mask_for_pooling = attention_mask.to_dtype(DTYPE)?.unsqueeze(2)?;
+
+        // Шаг 2: Вычисляем количество реальных (не padding) токенов в каждом примере
+        // [batch, seq_len, 1] -> [batch, 1] (сумма по измерению 1)
+        let sum_mask = attention_mask_for_pooling.sum(1)?;
+
+        // Шаг 3: Mean pooling
+        // Умножаем эмбеддинги на маску (зануляем padding) и суммируем по seq_len
+        // [batch, seq_len, hidden] * [batch, seq_len, 1] -> [batch, seq_len, hidden]
+        // sum(1) -> [batch, hidden]
+        let embeddings = (embeddings.broadcast_mul(&attention_mask_for_pooling)?).sum(1)?;
+
+        // Делим на количество реальных токенов (получаем среднее)
+        // [batch, hidden] / [batch, 1] -> [batch, hidden]
+        let embeddings = embeddings.broadcast_div(&sum_mask)?;
+
+        // Шаг 4: L2 нормализация
+        // Вычисляем норму: sqrt(sum(x²)) и делим каждый элемент на неё
+        // Результат: вектор единичной длины (||v|| = 1)
+        let embeddings = embeddings.broadcast_div(&embeddings.sqr()?.sum_keepdim(1)?.sqrt()?)?;
+
+        Ok(embeddings)
+    }
+
+    /// Генерирует тензор эмбеддингов для одного текста.
+    ///
+    /// Упрощенная версия `embed_tensor_batch` для обработки одиночного текста.
+    /// Для батчевой обработки используйте `embed_tensor_batch`.
+    #[allow(dead_code)]
+    async fn embed_tensor(&self, text: &str) -> Result<Tensor>
+    {
+        let start = std::time::Instant::now();
+        let model = self.model()?;
+        let tokens = self.tokenizer()
+            .encode(text, true)
+            .map_err(|e| anyhow!("Encode error {}", e))?;
+
+        let token_ids = Tensor::new(tokens.get_ids(), self.device())?.unsqueeze(0)?;
+        let attention_mask = Tensor::new(tokens.get_attention_mask(), self.device())?.unsqueeze(0)?;
+        let token_type_ids = token_ids.zeros_like()?;
+        info!("running inference {:?}", token_ids.shape());
+        let embeddings = model.forward(&token_ids, &token_type_ids, Some(&attention_mask))?;
+        info!("generated embeddings {:?}", embeddings.shape());
+        let embeddings = Self::mean_pooling(&embeddings, &attention_mask)?;
+        info!("pooled embeddings {:?} in {:?} s", embeddings.shape(), start.elapsed());
+        Ok(embeddings)
     }
 }
 
-impl Model for RetriverModel
+impl Model<BertModel, Config> for RetriverModel
 {
     fn name(&self) -> &ModelName 
     {
@@ -107,163 +331,66 @@ impl Model for RetriverModel
     {
         &self.device
     }
-
-    async fn load_model(self) -> Result<Self>
+    fn model_is_loaded(&self) -> bool 
     {
+        self.model.is_some()
+    }
+
+    /// Загружает BERT модель в память.
+    ///
+    /// # Процесс загрузки:
+    ///
+    /// 1. **Проверка**: Если модель уже загружена, возвращает Ok
+    /// 2. **Загрузка весов**: Читает файл .pth с весами модели
+    /// 3. **Инициализация BERT**: Создает BertModel с загруженными весами
+    /// 4. **Блокирующая операция**: Загрузка выполняется в отдельном потоке (spawn_blocking)
+    ///    чтобы не блокировать async runtime
+    ///
+    /// # Возвращает
+    /// * `Ok(())` - Модель успешно загружена или уже была загружена
+    /// * `Err` - Если не удалось загрузить файл модели или инициализировать BERT
+    ///
+    /// # Примечание
+    /// Загрузка модели - тяжелая операция (может занять несколько секунд).
+    /// Модель загружается на устройство, выбранное при инициализации (CPU/CUDA).
+    async fn load_model(&mut self) -> Result<()>
+    {
+        if self.model.is_some()
+        {
+            return Ok(())
+        }
         let start = std::time::Instant::now();
         let config = self.config().clone();
         let model_name = self.model_name.as_ref().to_owned();
         let device = self.device().clone();
         let emb_cfg = self.embedding_config();
+
+        // Загрузка весов модели из файла .pth (PyTorch формат)
         let vb = VarBuilder::from_pth(&emb_cfg.retriver_model_path, DTYPE, &device)
             .context(format!("Error load retriver model from file {}", emb_cfg.retriver_model_path.display()))?;
+
+        // Загрузка модели в отдельном потоке, так как это блокирующая операция
         let result: Result<BertModel> = tokio::task::spawn_blocking(move ||
         {
             let model = BertModel::load(vb, &config).context("Error load retriver model")?;
             info!("retriver model {} loaded in {:?}", model_name, start.elapsed());
             Ok(model)
         }).await?;
-        let _ = self.model.set(result?);
-        Ok(self)
-    }
-    fn unload_model(mut self) -> Result<()> 
-    {
-        self.model = OnceLock::new();
+
+        self.model = Some(result?);
         Ok(())
+    }
+    fn unload_model(&mut self)
+    {
+        self.model = None;
     }
     fn model(&self) -> Result<&BertModel> 
     {
-        let model = self.model.get().context("Model is not initialized!")?;
+        let model = self.model.as_ref()
+            .context(format!("Model {} is not initialized!", self.model_name.as_ref()))?;
         Ok(model)
     }
 }
-
-// pub struct ContextModel
-// {
-//     //Каждый чанк будет представлен вектором из `1024` чисел
-//     pub dimension: usize,
-//     //чанкуем по `8192` токена
-//     pub max_tokens: usize,
-//     pub overlap_tokens: usize,
-//     pub model_name: ModelName,
-//     device: Device,
-//     config: Config,
-//     tokenizer: Tokenizer,
-   
-// }
-
-
-
-// impl ContextModel 
-// {
-//     ///TODO для релиза пменять!
-//     fn current_dir() -> Result<PathBuf>
-//     {
-//         Ok(Path::new("/home/phobos/projects/rust/law-rag").to_path_buf())
-//         // if cfg!(debug_assertions)
-//         // {
-//         //     Ok(Path::new("/home/phobos/projects/rust/law-rag").to_path_buf())
-//         // }
-//         // else
-//         // {
-//         //     let current_dir = std::env::current_dir()?;
-//         //     Ok(current_dir)
-//         // }
-//     }
-//     pub async fn new(config: Arc<EmbeddingConfiguration>) -> Result<Self>
-//     {
-//         //let current_dir = Self::current_dir()?;
-//         //debug!("current_dir: {}", current_dir.display());
-//         info!("Try load tokenizer.json");
-//         let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
-//         info!("Running on device: {:?}", &device);
-//         let max_tokens = 8192;
-//         let dimension = 1024;
-//         let tokenizer_file = &config.retriver_tokenizer_path;
-//         let tokenizer = tokio::fs::read(&tokenizer_file).await
-//             .context(format!("Error load tokenizer file from {}", tokenizer_file.display()))?;
-//         let mut tokenizer = Tokenizer::from_bytes(tokenizer)
-//             .map_err(|e| anyhow::anyhow!("Error deserialize tokenizer file {}", e))?;
-//         let pp = PaddingParams 
-//         {
-//             strategy: tokenizers::PaddingStrategy::BatchLongest,
-//             ..Default::default()
-//         };
-//         tokenizer.with_padding(Some(pp));
-        
-//         let model_config_file = &config.reranker_config_path;
-//         let model_config = tokio::fs::read(&tokenizer_file).await
-//             .context(format!("Error load config file from {}", model_config_file.display()))?;
-//         let config = serde_json::from_slice(&model_config).context("Error deserialize config file")?;
-//         // let padding = PaddingParams 
-//         // {
-//         //     strategy: tokenizers::PaddingStrategy::Fixed(max_tokens),
-//         //     direction: tokenizers::PaddingDirection::Right,
-//         //     pad_to_multiple_of: None,
-//         //     pad_id: 0,
-//         //     pad_type_id: 0,
-//         //     pad_token: "[PAD]".to_string(),
-//         // };
-//         // tokenizer.with_padding(Some(padding));
-//         Ok(Self
-//         {
-//             dimension,
-//             max_tokens,
-//             overlap_tokens: (max_tokens / 10).min(256), // Максимум 256 токенов перекрытия,
-//             model_name: ModelName::M3,
-//             config,
-//             device,
-//             tokenizer,
-//             model: OnceLock::<BertModel>::new()
-//         })
-//     }
-//     async fn load_model(&self) -> Result<BertModel>
-//     {
-//         let start = std::time::Instant::now();
-//         let config = self.config().clone();
-//         let model_name = self.model_name.as_ref().to_owned();
-//         let device = self.device().clone();
-//         let result = tokio::task::spawn_blocking(move ||
-//         {
-//             let current_dir = Self::current_dir()?;
-//             let model_file = Path::new(&current_dir).join("model").join("pytorch_model.bin");
-//             let vb = VarBuilder::from_pth(&model_file, DTYPE, &device)?;
-//             let model = BertModel::load(vb, &config)?;
-//             info!("model {} loaded in {:?}", model_name, start.elapsed());
-//             Ok(model)
-//         }).await?;
-//         result
-//     }
-//     pub fn tokenizer(&self) -> &Tokenizer
-//     {
-//         &self.tokenizer
-//     }
-//     pub fn tokenizer_mut(&mut self) -> &mut Tokenizer
-//     {
-//         &mut self.tokenizer
-//     }
-//     pub fn device(&self) -> &Device
-//     {
-//         &self.device
-//     }
-//     pub fn config(&self) -> &Config
-//     {
-//         &self.config
-//     }
-//     pub async fn model(&self) -> Result<&BertModel>
-//     {
-//         if let Some(model) = MODEL.get()
-//         {
-//             Ok(model)
-//         }
-//         else 
-//         {
-//             let model = self.load_model().await.inspect_err(|e| error!("{}", e))?;
-//             let _ = MODEL.set(model);
-//             Ok(MODEL.get().unwrap())
-//         }
-//     }
-// }
 
 #[cfg(test)]
 mod tests
@@ -277,7 +404,6 @@ mod tests
 
     use crate::model::Model;
     use crate::retriver::{RetriverModel};
-    use crate::error::{Error};
     use crate::{EmbeddingConfiguration, logger};
     use anyhow::Result;
     #[tokio::test]
@@ -334,7 +460,7 @@ mod tests
         let attention_mask = Tensor::stack(&attention_mask, 0).unwrap();
         let token_type_ids = token_ids.zeros_like().unwrap();
         info!("running inference on batch {:?}", token_ids.shape());
-        let model = model.load_model().await.unwrap();
+        model.load_model().await.unwrap();
         let embeddings = model.model().unwrap().forward(&token_ids, &token_type_ids, Some(&attention_mask)).unwrap();
         info!("generated embeddings {:?}", embeddings.shape());
         let embeddings = mean_pooling(&embeddings, &attention_mask).unwrap();
@@ -374,11 +500,13 @@ mod tests
         info!("Overall work time {:?}", start.elapsed());
     }
 
-    pub fn normalize_l2(v: &Tensor) -> Result<Tensor> 
+    #[allow(dead_code)]
+    pub fn normalize_l2(v: &Tensor) -> Result<Tensor>
     {
         Ok(v.broadcast_div(&v.sqr().unwrap().sum_keepdim(1).unwrap().sqrt().unwrap()).unwrap())
     }
 
+    #[allow(dead_code)]
     fn mean_pooling(embeddings: &Tensor, attention_mask: &Tensor) -> Result<Tensor> 
     {
         let attention_mask_for_pooling = attention_mask.to_dtype(DTYPE)?.unsqueeze(2)?;
@@ -387,5 +515,26 @@ mod tests
         let result = embeddings.broadcast_div(&sum_mask)?;
         let result = result.broadcast_div(&result.sqr()?.sum_keepdim(1)?.sqrt()?)?;
         Ok(result)
+    }
+
+     #[tokio::test]
+    async fn test_embed()
+    {
+        logger::init();
+        let emb_cfg = Arc::new(EmbeddingConfiguration::default());
+        let retriver = RetriverModel::new(emb_cfg).await.unwrap();
+        let text = &["Тестовый текст лалалал"];
+        let e =  retriver.embed_tensor_batch(text).await;
+        info!("{:?}", e);
+    }
+    #[tokio::test]
+    async fn test_embed2()
+    {
+        logger::init();
+        let emb_cfg = Arc::new(EmbeddingConfiguration::default());
+        let retriver = RetriverModel::new(emb_cfg).await.unwrap();
+        let text = "Тестовый текст лалалал";
+        let e =  retriver.embed_tensor(text).await;
+        info!("{:?}", e);
     }
 }

@@ -1,6 +1,6 @@
-use std::{collections::HashMap, sync::{Arc, atomic::AtomicBool}};
+use std::{collections::HashMap, ops::Deref, sync::{Arc, atomic::AtomicBool}};
 use database::{ServiceStatus, QdrantConfig, QdrantManager, SearchResult};
-use embedding::{BgeReranker, Chunk, ChunkMeta, Chunker, EmbeddingConfiguration, Embeddings, Generator, ModelPrompt, RerankResult};
+use embedding::{BgeReranker, Chunk, ChunkMeta, Chunker, EmbeddingConfiguration, Generator, Model, ModelPrompt, RerankResult, RetriverModel};
 use serde::Serialize;
 use tokio::sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender}};
 use tracing::{debug, error, info, warn};
@@ -12,20 +12,16 @@ use crate::{Error, html_converter::HtmlConverter};
 pub struct ModelsState
 {
     retriver: bool,
-    reranker: bool,
     generator: bool,
-    #[serde(skip_serializing_if="Option::is_none")]
-    system_prompt: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    model_size: Option<usize>
+    system_prompt: String,
+    model_size: usize
 }
 pub struct Service
 {
     embedding_config: Arc<EmbeddingConfiguration>,
-    pub retriver: RwLock<Option<Embeddings>>,
-    reranker: RwLock<Option<BgeReranker>>,
-    generator: RwLock<Option<Generator>>,
-    generator_model_is_load: AtomicBool
+    retriver: RwLock<RetriverModel>,
+    reranker: RwLock<BgeReranker>,
+    generator: RwLock<Generator>,
 
 }
 
@@ -35,33 +31,37 @@ impl Service
     {
         let generator = Generator::load(Arc::clone(&emb_cfg))
             .inspect_err(|e| error!("Error when loading generator `{}`", e))
-            .map_err(|e| Error::GeneratorModelLoadError { source: e })?;
+            .map_err(|e| Error::ModelLoadError { model: "generator".to_owned(), source: e })?;
+        let retriver = RetriverModel::new(Arc::clone(&emb_cfg)).await
+            .inspect_err(|e| error!("Error when loading retriver model `{}`", e))
+            .map_err(|e| Error::ModelLoadError { model: "retriver".to_owned(), source: e })?;
+        let reranker = BgeReranker::new(Arc::clone(&emb_cfg)).await
+            .inspect_err(|e| error!("Error when loading reranker model `{}`", e))
+            .map_err(|e| Error::ModelLoadError { model: "reranker".to_owned(), source: e })?;
         let slf = Self
         {
             embedding_config: emb_cfg,
-            retriver: RwLock::new(None),
-            reranker: RwLock::new(None),
-            generator: RwLock::new(Some(generator)),
-            generator_model_is_load: AtomicBool::new(false)
+            retriver: RwLock::new(retriver),
+            reranker: RwLock::new(reranker),
+            generator: RwLock::new(generator),
         };
        Ok(slf)
     }
     pub async fn models_state(&self) -> ModelsState
     {
         let retriver_lock = self.retriver.read().await;
-        let retriver = retriver_lock.is_some();
+        let retriver = retriver_lock.model_is_loaded();
         drop(retriver_lock);
         let reranker_lock = self.reranker.read().await;
-        let reranker = reranker_lock.is_some();
+        let reranker = reranker_lock.model_is_loaded();
         drop(reranker_lock);
         let gen_lock = self.generator.read().await;
-        let generator = gen_lock.as_ref().is_some_and(|g| g.model_is_loaded());
-        let system_prompt = gen_lock.as_ref().and_then(|g| Some(g.get_system_prompt().to_owned()));
-        let model_size = gen_lock.as_ref().and_then(|g| Some(g.get_size_in_bytes()));
+        let generator = gen_lock.model_is_loaded();
+        let system_prompt = gen_lock.get_system_prompt().to_owned();
+        let model_size = gen_lock.get_size_in_bytes();
         ModelsState
         {
-            reranker,
-            retriver,
+            retriver: retriver && reranker,
             generator,
             system_prompt,
             model_size
@@ -69,24 +69,19 @@ impl Service
     }
     pub async fn load_generator_model(&self) -> Result<ModelsState, Error>
     {
-        //TODO нужен ли здесь атомик вообще или сделать все состояния в атомиках чтобы не использовать лишний раз доступ к локам
-        if self.generator_model_is_load.load(std::sync::atomic::Ordering::Relaxed)
+        let mut gen_lock = self.generator.write().await;
+        if gen_lock.model_is_loaded()
         {
             warn!("Generator model already loaded");
+            drop(gen_lock);
             let state = self.models_state().await;
             Ok(state)
         }
-        else 
+        else
         {
-            let mut lock = self.generator.write().await;
-            let generator = lock.take();
-            if let Some(generator) = generator
-            {
-                let with_model = generator.load_model().await
-                    .map_err(|e| Error::GeneratorModelLoadError { source: e })?;
-                *lock = Some(with_model);
-                self.generator_model_is_load.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
+            gen_lock.load_model().await
+                .map_err(|e| Error::ModelLoadError { model: "generator".to_owned(), source: e })?;
+            drop(gen_lock);
             let state = self.models_state().await;
             Ok(state)
         }
@@ -104,25 +99,12 @@ impl Service
     pub async fn init_qdrant(&self) -> Result<(), Error>
     {
         let cfg = self.qdrant_config();
+        let _ = self.check_load_embedding_models().await?;
         let reranker = self.reranker.read().await;
         let retriver = self.retriver.read().await;
-        if let (Some(ret), Some(rer)) = (reranker.as_ref(), retriver.as_ref())
-        {
-            let qm = QdrantManager::new(cfg, rer, ret).await?;
-            qm.ensure_collection().await?;
-            Ok(())
-        }
-        else
-        {
-            if reranker.is_none()
-            {
-                Err(Error::RerankerModelLoadError)
-            }
-            else 
-            {
-                Err(Error::RetriverModelLoadError)
-            }
-        }
+        let qm = QdrantManager::new(cfg, &retriver, &reranker).await?;
+        qm.ensure_collection().await?;
+        Ok(())
     }
     //tokio spawn inside, may be long operation
     //progress messages and errors sends via sender
@@ -131,59 +113,52 @@ impl Service
         let cfg = self.qdrant_config();
         let drop_service = self;
         let service = Arc::clone(&drop_service);
-        let reranker = drop_service.reranker.read().await;
-        let retriver = drop_service.retriver.read().await;
-        if reranker.is_none()
-        {
-            return Err(Error::RerankerModelLoadError);
-        }
-        if retriver.is_none() 
-        {
-            return Err(Error::RetriverModelLoadError);
-        }
-        drop(reranker);
-        drop(retriver);
+        let _ = service.check_load_embedding_models().await?;
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move 
             {
                 let reranker = service.reranker.read().await;
                 let retriver = service.retriver.read().await;
-                if let (Some(ret), Some(rer)) = (reranker.as_ref(), retriver.as_ref())
+                
+                let qm = QdrantManager::new(cfg, &retriver, &reranker).await
+                    .inspect_err(|e| error!("Error creating QdrantManager: {}", e));
+                if let Ok(qm) = qm
                 {
-                    let qm = QdrantManager::new(cfg, rer, ret).await
-                        .inspect_err(|e| error!("Error creating QdrantManager: {}", e));
-                    if let Ok(qm) = qm
-                    {
-                        //auto send error to client
-                        let _added = qm.add_chunks_to_qdrant(chunks, sender).await;
-                    }
-                    else
-                    {
-                        let _ = sender.send(ServiceStatus::qdrant_error(qm.err().unwrap()));
-                    }
+                    //auto send error to client
+                    let _added = qm.add_chunks_to_qdrant(chunks, sender).await;
+                }
+                else
+                {
+                    let _ = sender.send(ServiceStatus::qdrant_error(qm.err().unwrap()));
                 }
             }
         );
         Ok(receiver)
         
     }
+
+    async fn check_load_embedding_models(&self) -> Result<(), Error>
+    {
+        let reranker = self.reranker.read().await;
+        let retriver = self.retriver.read().await;
+        if !reranker.model_is_loaded()
+        {
+            return Err(Error::RerankerModelNotLoad)
+        }
+        if !retriver.model_is_loaded()
+        {
+            return Err(Error::RetriverModelNotLoad)
+        }
+        Ok(())
+    }
     ///может потратить много времени на реранкинг, пока не буду канал выводить для статуса
     pub async fn search(&self, query: &str, limit: usize, reranker_limit: usize) -> Result<Vec<RerankResult<SearchResult>>, Error>
     {
         let cfg = self.qdrant_config();
+        let _ = self.check_load_embedding_models().await?;
         let reranker = self.reranker.read().await;
         let retriver = self.retriver.read().await;
-        if reranker.is_none()
-        {
-            return Err(Error::RerankerModelLoadError);
-        }
-        if retriver.is_none() 
-        {
-            return Err(Error::RetriverModelLoadError);
-        }
-        let ret = retriver.as_ref().unwrap();
-        let rer = reranker.as_ref().unwrap();
-        let qm = QdrantManager::new(cfg, ret, rer).await
+        let qm = QdrantManager::new(cfg, &retriver, &reranker).await
             .inspect_err(|e| error!("Error creating QdrantManager: {}", e))?;
         let result = qm.semantic_search(&query, limit, reranker_limit, None).await?;
         Ok(result)
@@ -216,34 +191,21 @@ impl Service
 
     pub async fn load_embedding_models(&self) -> Result<ModelsState, Error>
     {
-        let mut lock_retriver = self.retriver.write().await;
-        let mut lock_reranker = self.reranker.write().await;
-        if lock_retriver.is_none()
         {
-            let retriver = embedding::Embeddings::new(Arc::clone(&self.embedding_config)).await
-                .map_err(|e| Error::EmbeddingModelLoadError { source: e })?;
-            *lock_retriver = Some(retriver);
+            let mut lock_retriver = self.retriver.write().await;
+            let _ = lock_retriver.load_model().await
+                .map_err(|e| Error::ModelLoadError { model: "retriver".to_owned(), source: e })?;
+            let mut lock_reranker = self.reranker.write().await;
+            let _ = lock_reranker.load_model().await
+                .map_err(|e| Error::ModelLoadError { model: "reranker".to_owned(), source: e })?;
         }
-        drop(lock_retriver);
-        if lock_reranker.is_none()
-        {
-            let reranker = embedding::BgeReranker::new(Arc::clone(&self.embedding_config)).await
-                .map_err(|e| Error::EmbeddingModelLoadError { source: e })?;
-            *lock_reranker = Some(reranker);
-        }
-        drop(lock_reranker);
         let state = self.models_state().await;
         Ok(state)
     }
     pub async fn unload_generator_model(&self) -> Result<ModelsState, Error>
     {
         let mut lock = self.generator.write().await;
-        let mut generator = lock.as_mut();
-        if let Some(generator) = generator.as_mut()
-        {
-            generator.unload_model();
-            self.generator_model_is_load.store(false, std::sync::atomic::Ordering::Relaxed);
-        }
+        lock.unload_model();
         drop(lock);
         let state = self.models_state().await;
         Ok(state)
@@ -251,9 +213,9 @@ impl Service
     pub async fn unload_embedding_models(&self) -> Result<ModelsState, Error>
     {
         let mut lock = self.retriver.write().await;
-        *lock = None;
+        lock.unload_model();
         let mut lock = self.reranker.write().await;
-        *lock = None;
+        lock.unload_model();
         drop(lock);
         let state = self.models_state().await;
         Ok(state)
@@ -269,11 +231,10 @@ impl Service
 
     pub async fn delete_document_from_qdrant(&self, hash: &str) -> Result<(), Error>
     {
+        let _ = self.check_load_embedding_models().await?;
         let reranker = self.reranker.read().await;
-        let rer = reranker.as_ref().ok_or(Error::RerankerModelLoadError)?;
         let retriver = self.retriver.read().await;
-        let ret = retriver.as_ref().ok_or(Error::RetriverModelLoadError)?;
-        let qm = QdrantManager::new(self.qdrant_config(), ret, rer).await
+        let qm = QdrantManager::new(self.qdrant_config(), &retriver, &reranker).await
             .inspect_err(|e| error!("Error creating QdrantManager: {}", e))?;
         let _ = qm.delete_document(hash).await?;
         Ok(())
@@ -281,12 +242,8 @@ impl Service
 
     pub async fn get_chunks(&self, sign_date: Date, number: &str, sender: UnboundedSender<ServiceStatus>) -> Result<Vec<Chunk>, Error>
     {
-        let model = self.retriver.read().await;
-        if model.is_none()
-        {
-            return Err(Error::RetriverModelLoadError);
-        }
-        let model = model.as_ref().unwrap();
+        let _ = self.check_load_embedding_models().await?;
+        let retriver = self.retriver.read().await;
         let converter = HtmlConverter{};
         let result = 
             systema_client::SystemaClient::get_document(
@@ -297,7 +254,7 @@ impl Service
         //если будем разбивать на буольшее количество чанков чем один абзац - один чанк то необходимо поправить
         let mut chunks = Vec::with_capacity(result.node_count());
         info!("Ноды документы были успешно получены: {} шт.", result.node_count());
-        let chunker = Chunker::new(&model.model()).await.unwrap();
+        let chunker = Chunker::new(&retriver).await.unwrap();
         let mut current = 1;
         for node in &result
         {
@@ -335,11 +292,10 @@ impl Service
     pub async fn genereate_response(self: Arc<Self>, query: &str, context: Vec<RerankResult<SearchResult>>) -> Result<UnboundedReceiver<String>, Error>
     {
         let service = self;
-        
         let generator = service.generator.read().await;
-        if generator.is_none()
+        if !generator.model_is_loaded()
         {
-            return Err(Error::GeneratorModelNotLoadError);
+            return Err(Error::GeneratorModelNotLoad);
         }
         drop(generator);
         let task_service = Arc::clone(&service);
@@ -349,8 +305,7 @@ impl Service
         {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                let mut generator_lock = task_service.generator.write().await;
-                let generator = generator_lock.as_mut().unwrap();
+                let mut generator = task_service.generator.write().await;
                 let result = generator.prompt(&query, context.as_slice(), sender);
                 debug!("{:?}", result);
              });

@@ -78,13 +78,13 @@ pub struct QdrantManager<'model>
 {
     client: Qdrant,
     config: QdrantConfig,
-    embedding_client: &'model embedding::Embeddings,
-    reranking_client: &'model embedding::BgeReranker
+    retriver_model: &'model embedding::RetriverModel,
+    reranking_model: &'model embedding::BgeReranker
 }
 
 impl<'model> QdrantManager<'model>
 {
-    pub async fn new(config: QdrantConfig, embedding_client: &'model embedding::Embeddings, reranking_client: &'model BgeReranker) -> Result<Self> 
+    pub async fn new(config: QdrantConfig, retriver_model: &'model embedding::RetriverModel, reranking_model: &'model BgeReranker) -> Result<Self> 
     {
         let client = Qdrant::from_url(&config.url)
             .build()?;
@@ -93,8 +93,8 @@ impl<'model> QdrantManager<'model>
         {
             client,
             config,
-            embedding_client,
-            reranking_client
+            retriver_model,
+            reranking_model
         })
     }
     /// Создание коллекции (если не существует)
@@ -106,7 +106,7 @@ impl<'model> QdrantManager<'model>
             .any(|c| c.name == self.config.collection_name) 
         {
 
-            let vec_params =   qdrant_client::qdrant::VectorParamsBuilder::new(self.embedding_client.dimension() as u64, self.config.distance.clone().into()).build();
+            let vec_params =   qdrant_client::qdrant::VectorParamsBuilder::new(self.retriver_model.dimension as u64, self.config.distance.clone().into()).build();
             let vectors_config = qdrant_client::qdrant::VectorsConfig
             {
                 config: Some(qdrant_client::qdrant::vectors_config::Config::Params(vec_params))
@@ -160,10 +160,9 @@ impl<'model> QdrantManager<'model>
     async fn process_batch(&self, chunk: Chunk, count: usize, current: usize, sender: tokio::sync::mpsc::UnboundedSender<ServiceStatus>) -> Result<Vec<String>> 
     {
         let mut points = Vec::new();
-        let dimension = self.embedding_client.dimension();
-        
+        let dimension = self.retriver_model.dimension;
         // Получаем эмбеддинг для чанка
-        let embeddings = self.embedding_client.generate_embeddings(&[chunk.content.as_str()]).await?;
+        let embeddings = self.retriver_model.generate_embeddings(&[chunk.content.as_str()]).await?;
         // Проверяем размерность
         if embeddings.len() != dimension 
         {
@@ -231,7 +230,7 @@ impl<'model> QdrantManager<'model>
         filter: Option<SearchFilter>,
     ) -> Result<Vec<RerankResult<SearchResult>>> {
         // Получаем эмбеддинг для запроса
-        let query_vector = self.embedding_client.generate_embeddings(&[query]).await?;
+        let query_vector = self.retriver_model.generate_embeddings(&[query]).await?;
         // Строим запрос к Qdrant
         let mut search_request = SearchPoints 
         {
@@ -265,7 +264,7 @@ impl<'model> QdrantManager<'model>
             .into_iter()
             .map(|sp| SearchResult::from_scored_point(sp))
             .collect();
-        let reranking = self.reranking_client.rerank(query, results, rerank_limit).await
+        let reranking = self.reranking_model.rerank(query, results, rerank_limit).await
             .inspect_err(|e| tracing::error!("{}", e))?;
         //reranking.into_iter().map(|r| r)
         Ok(reranking)
@@ -347,7 +346,7 @@ impl<'model> QdrantManager<'model>
         let search_request = SearchPoints 
         {
             collection_name: self.config.collection_name.clone(),
-            vector: vec![0.0; self.embedding_client.dimension()], // Пустой вектор для keyword search
+            vector: vec![0.0; self.retriver_model.dimension], // Пустой вектор для keyword search
             filter: Some(Filter 
             {
                 should: all_conditions,
@@ -441,7 +440,7 @@ impl<'model> QdrantManager<'model>
         let search_request = SearchPoints 
         {
             collection_name: self.config.collection_name.clone(),
-            vector: vec![0.0; self.embedding_client.dimension()],
+            vector: vec![0.0; self.retriver_model.dimension],
             filter: Some(filter.into()),
             limit: limit.unwrap_or(1000) as u64,
             with_payload: Some(WithPayloadSelector 

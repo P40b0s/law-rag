@@ -21,20 +21,22 @@ mod tests
     {
         logger::init();
         let emb_cfg = Arc::new(EmbeddingConfiguration::default());
-        let emb_client = embedding::Embeddings::new(emb_cfg.clone()).await.unwrap();
-        let reranker_client = embedding::BgeReranker::new(emb_cfg.clone()).await.unwrap();
+        let mut retriver = embedding::RetriverModel::new(emb_cfg.clone()).await.unwrap();
+        retriver.load_model().await.unwrap();
+        let mut reranker_client = embedding::BgeReranker::new(emb_cfg.clone()).await.unwrap();
+        reranker_client.load_model().await.unwrap();
         let qconfig = QdrantConfig
         {
             url: "http://localhost:6334".to_owned(),
             collection_name: "test_collection".to_owned(),
             distance: database::Distance::Cosine
         };
-        let qdrant = database::QdrantManager::new(qconfig, &emb_client, &reranker_client).await.unwrap();
+        let qdrant = database::QdrantManager::new(qconfig, &retriver, &reranker_client).await.unwrap();
         // Пример поиска похожих документов
         let query = "Как взыскивается задолженность с налогоплательщика?";
         //let emb = emb_client.generate_embeddings(&[texts]).await.unwrap();
         let similar = qdrant.semantic_search(query, 5, 5, None).await.unwrap();
-        let _ = emb_client.unload_model();
+        let _ = retriver.unload_model();
         let _ = reranker_client.unload_model();
         info!("Топ-5 похожих чанков:");
         for similarity in &similar 
@@ -56,7 +58,8 @@ mod tests
         //         }
         //     }
         // );
-        let mut generator = Generator::load(emb_cfg).unwrap().load_model().await.unwrap();
+        let mut generator = Generator::load(emb_cfg).unwrap();
+        generator.load_model().await.unwrap();
         std::thread::spawn(move ||
             {
                 let result = generator.prompt(query, similar.as_slice(), sender);
@@ -71,6 +74,22 @@ mod tests
         {
             info!("{}", output);
         }
+        
+    }
+
+
+    #[tokio::test]
+    async fn test_load()
+    {
+        logger::init();
+        let emb_cfg = Arc::new(EmbeddingConfiguration::default());
+        let mut retriver = embedding::RetriverModel::new(emb_cfg.clone()).await.unwrap();
+        retriver.load_model().await.unwrap();
+        let mut reranker_client = embedding::BgeReranker::new(emb_cfg.clone()).await.unwrap();
+        reranker_client.load_model().await.unwrap();
+        let reranker_model_name = reranker_client.name();
+        let retriver_model_name = retriver.name();
+        info!("retriver model: {} reranker model: {}", retriver_model_name.as_ref(), reranker_model_name.as_ref());
         
     }
 }

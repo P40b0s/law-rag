@@ -10,7 +10,7 @@ use scraper::Node;
 use systema_client::Converter;
 use tracing::info;
 pub use utilites::Date;
-pub use embedding::{Chunk, ChunkMeta, ChunkedText, Embeddings, Chunker};
+pub use embedding::{Chunk, ChunkMeta, ChunkedText, Chunker};
 use html_converter::HtmlConverter;
 pub use document::{Document, DocumentCard};
 pub use error::Error;
@@ -24,7 +24,7 @@ mod tests
     use std::sync::Arc;
 
     use database::QdrantConfig;
-    use embedding::EmbeddingConfiguration;
+    use embedding::{EmbeddingConfiguration, Model};
     use systema_client::{DocumentNode, DocumentNodes};
     use tracing::{debug, info};
     use utilites::Date;
@@ -41,7 +41,8 @@ mod tests
                 Date::new_date(31, 07, 2025),
                 "287-ФЗ", converter).await.unwrap();  
         let emb_cfg = Arc::new(EmbeddingConfiguration::default());
-        let model = embedding::RetriverModel::new(emb_cfg).await.unwrap();
+        let mut model = embedding::RetriverModel::new(emb_cfg).await.unwrap();
+        model.load_model().await.unwrap();
         let mut chunks = Vec::with_capacity(result.node_count());
         info!("Ноды документы были успешно получены: {} шт.", result.node_count());
         let chunker = Chunker::new(&model).await.unwrap();
@@ -85,7 +86,7 @@ mod tests
     {
         logger::init();
         let emb_cfg = Arc::new(EmbeddingConfiguration::default());
-        let emb_client = embedding::Embeddings::new(emb_cfg.clone()).await.unwrap();
+        let retriver = embedding::RetriverModel::new(emb_cfg.clone()).await.unwrap();
         let reranker_client = embedding::BgeReranker::new(emb_cfg).await.unwrap();
         let qconfig = QdrantConfig
         {
@@ -96,8 +97,8 @@ mod tests
        
         let date = Date::new_date(31, 07, 2025);
         let number = "287-ФЗ";  
-        let chunks = super::chunks::get_chunks(date, number, emb_client.model()).await.unwrap();
-        let qdrant = database::QdrantManager::new(qconfig, &emb_client, &reranker_client).await.unwrap();
+        let chunks = super::chunks::get_chunks(date, number, &retriver).await.unwrap();
+        let qdrant = database::QdrantManager::new(qconfig, &retriver, &reranker_client).await.unwrap();
         let _ = qdrant.ensure_collection().await.unwrap();
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(

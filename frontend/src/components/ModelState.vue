@@ -21,20 +21,6 @@ n-popover(trigger="hover" :show-arrow="false" placement="bottom" width="400" v-i
           )
           .popover-status(:class="getStatusClass('retriver')")
             | {{ state.retriver ? 'Загружен' : 'Выгружен' }}
-      
-      .popover-item
-        .popover-label Реранкер:
-        .popover-controls
-          n-switch(
-            :value="state.reranker"
-            @update:value="toggleModel('reranker')"
-            :loading="loadingStates.reranker"
-            size="small"
-            :disabled="loadingStates.retriver || loadingStates.generator"
-          )
-          .popover-status(:class="getStatusClass('reranker')")
-            | {{ state.reranker ? 'Загружен' : 'Выгружен' }}
-      
       .popover-item
         .popover-label Генератор:
         .popover-controls
@@ -69,7 +55,7 @@ n-popover(trigger="hover" :show-arrow="false" placement="bottom" width="400" v-i
         )
           | {{ areAllModelsLoaded ? 'Выгрузить все' : 'Загрузить все' }}
         n-tag(type="info" size="small" round)
-          | {{ loadedCount }}/3 моделей загружено
+          | {{ loadedCount }}/2 моделей загружено
 </template>
 
 <script lang="ts" setup>
@@ -84,38 +70,36 @@ import {
 import useModelState from '@/composables/useModelState'
 import { notify_service } from '@/services/notification_service'
 import { match } from '@globalart/oxide'
-import { http_sevice } from '@/services/http_service/http_service'
 
 // Тип для ключей моделей
-type ModelKey = 'retriver' | 'reranker' | 'generator'
+type ModelKey = 'retriver' | 'generator'
 
 // Композабл для состояния моделей
-const { get_state, set_state } = useModelState()
+const { get_state, load_embedding_models, unload_embedding_models, load_generator_model, unload_generator_model} = useModelState()
 const state = get_state()
 const message = notify_service;
 
 // Состояния загрузки для каждой модели
 const loadingStates = reactive({
   retriver: false,
-  reranker: false,
   generator: false
 })
 
 // Вычисляемые свойства
 const loadedCount = computed(() => {
   if (state.value) {
-    return (state.value.generator ? 1 : 0) + (state.value.retriver ? 1 : 0) + (state.value.reranker ? 1 : 0)
+    return (state.value.generator ? 1 : 0) + (state.value.retriver ? 1 : 0)
   } else {
     return 0
   }
 })
 
-const isAllLoaded = computed(() => loadedCount.value === 3)
-const isPartiallyLoaded = computed(() => loadedCount.value > 0 && loadedCount.value < 3)
+const isAllLoaded = computed(() => loadedCount.value === 2)
+const isPartiallyLoaded = computed(() => loadedCount.value > 0 && loadedCount.value < 2)
 const isNoneLoaded = computed(() => loadedCount.value === 0)
 const areAllModelsLoaded = computed(() => isAllLoaded.value)
 const isLoadingAny = computed(() => 
-  loadingStates.retriver || loadingStates.reranker || loadingStates.generator
+  loadingStates.retriver || loadingStates.generator
 )
 
 const statusClass = computed(() => ({
@@ -138,7 +122,7 @@ const iconColor = computed(() => {
 
 const statusText = computed(() => {
   if (isAllLoaded.value) return 'Все модели загружены'
-  if (isPartiallyLoaded.value) return `Частично (${loadedCount.value}/3)`
+  if (isPartiallyLoaded.value) return `Частично (${loadedCount.value}/2)`
   return 'Модели не загружены'
 })
 
@@ -155,18 +139,16 @@ const toggleModel = async (modelKey: ModelKey) => {
     {
        
       // Выгружаем модель
-       match(modelKey, [
-            ['generator', async () => http_sevice.model_state_service.unload_generator_model()],
-            ['reranker', async () => http_sevice.model_state_service.unload_embedding_models()],
-            ['retriver', async () => http_sevice.model_state_service.unload_embedding_models()]
+       await match(modelKey, [
+            ['generator', async () => await unload_generator_model()],
+            ['retriver', async () => await unload_embedding_models()]
         ])
       message.success(`Модель ${getModelName(modelKey)} выгружена`)
     } else {
       // Загружаем модель
-       match(modelKey, [
-            ['generator', async () => http_sevice.model_state_service.load_generator_model()],
-            ['reranker', async () => http_sevice.model_state_service.load_embedding_models()],
-            ['retriver', async () => http_sevice.model_state_service.load_embedding_models()]
+       await match(modelKey, [
+            ['generator', async () => await load_generator_model()],
+            ['retriver', async () => await load_embedding_models()]
         ])
       message.success(`Модель ${getModelName(modelKey)} загружена`)
     }
@@ -189,26 +171,22 @@ const toggleAllModels = async () => {
     if (shouldLoadAll) {
       // Загружаем все модели
       loadingStates.retriver = true
-      loadingStates.reranker = true
       loadingStates.generator = true
       
       await Promise.all([
-        http_sevice.model_state_service.load_generator_model(),
-        http_sevice.model_state_service.load_embedding_models(),
-        http_sevice.model_state_service.load_embedding_models()
+        load_generator_model(),
+        load_embedding_models(),
       ])
       
       message.success('Все модели загружены')
     } else {
       // Выгружаем все модели
       loadingStates.retriver = true
-      loadingStates.reranker = true
       loadingStates.generator = true
       
       await Promise.all([
-        http_sevice.model_state_service.unload_generator_model(),
-        http_sevice.model_state_service.unload_embedding_models(),
-        http_sevice.model_state_service.unload_embedding_models()
+        unload_generator_model(),
+        unload_embedding_models()
       ])
       
       message.success('Все модели выгружены')
@@ -218,7 +196,6 @@ const toggleAllModels = async () => {
     message.error(`Не удалось ${shouldLoadAll ? 'загрузить' : 'выгрузить'} все модели`)
   } finally {
     loadingStates.retriver = false
-    loadingStates.reranker = false
     loadingStates.generator = false
   }
 }
@@ -226,7 +203,6 @@ const toggleAllModels = async () => {
 const getModelName = (modelKey: ModelKey): string => {
   const names = {
     retriver: 'Ретривер',
-    reranker: 'Реранкер',
     generator: 'Генератор'
   }
   return names[modelKey]

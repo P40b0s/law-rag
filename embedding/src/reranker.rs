@@ -2,12 +2,14 @@ use std::sync::{Arc, OnceLock};
 
 use crate::{EmbeddingConfiguration, model::{Model, ModelName}};
 use anyhow::{Context, Result, anyhow};
-use candle_core::{DType, Tensor, Device};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use tokenizers::{PaddingParams, Tokenizer};
 use tracing::info;
-use candle_transformers::models::{bert::{BertModel, Config, DTYPE}};
+use candle_transformers::models::xlm_roberta::{XLMRobertaForSequenceClassification, Config};
 use serde::{Deserialize, Serialize};
+
+const DTYPE: DType = DType::F32;
 
 #[derive(Debug, Clone)]
 pub struct RerankResult<P: ToString>
@@ -23,17 +25,32 @@ impl<P: ToString> ToString for RerankResult<P>
     }
 }
 
-pub struct BgeReranker 
+/// BGE Reranker - модель для переранжирования результатов поиска.
+///
+/// Реранкер оценивает релевантность пар (query, document) и присваивает им скоры.
+/// Используется для улучшения качества поиска после первичного этапа retrieval.
+///
+/// # Архитектура
+/// - Базовая модель: XLM-RoBERTa (BAAI/bge-reranker-v2-m3)
+/// - Входной формат: `[query] [SEP] [document]`
+/// - Прямой проход через XLM-RoBERTa sequence classification
+/// - Модель возвращает логит релевантности
+/// - Нормализация через sigmoid для получения вероятности релевантности [0, 1]
+///
+/// # Использование
+/// 1. Первичный поиск с помощью RetriverModel (получение топ-N кандидатов)
+/// 2. Реранкинг с помощью BgeReranker (уточнение порядка и отбор топ-K)
+pub struct BgeReranker
 {
     model_name: ModelName,
     device: Device,
     config: Config,
     embedding_config: Arc<EmbeddingConfiguration>,
     tokenizer: Tokenizer,
-    model: OnceLock<BertModel>
+    model: Option<XLMRobertaForSequenceClassification>
 }
 
-impl Model for BgeReranker
+impl Model<XLMRobertaForSequenceClassification, Config> for BgeReranker
 {
     fn name(&self) -> &ModelName 
     {
@@ -63,87 +80,61 @@ impl Model for BgeReranker
     {
         &self.device
     }
+    fn model_is_loaded(&self) -> bool 
+    {
+        self.model.is_some()
+    }
 
-    async fn load_model(self) -> Result<Self>
+    async fn load_model(&mut self) -> Result<()>
     {
-        let start = std::time::Instant::now();
-        let config = self.config().clone();
-        let model_name = self.model_name.as_ref().to_owned();
-        let device = self.device().clone();
-        let emb_cfg = self.embedding_config();
-        let vb = VarBuilder::from_pth(&emb_cfg.retriver_model_path, DTYPE, &device)
-            .context(format!("Error load reranker model from file {}", emb_cfg.retriver_model_path.display()))?;
-        let result: Result<BertModel> = tokio::task::spawn_blocking(move ||
+        if self.model.is_none()
         {
-            
-            let model = BertModel::load(vb, &config).context("Error load reranker model")?;
-            info!("reranker model {} loaded in {:?}", model_name, start.elapsed());
-            Ok(model)
-        }).await?;
-        let _ = self.model.set(result?);
-        Ok(self)
+            let start = std::time::Instant::now();
+            let config = self.config().clone();
+            let model_name = self.model_name.as_ref().to_owned();
+            let device = self.device().clone();
+            let emb_cfg = self.embedding_config();
+
+            // Чтение файла safetensors
+            let model_data = tokio::fs::read(&emb_cfg.reranker_model_path).await
+                .context(format!("Error reading reranker model file {}", emb_cfg.reranker_model_path.display()))?;
+
+            let result: Result<XLMRobertaForSequenceClassification> = tokio::task::spawn_blocking(move ||
+            {
+                // Загрузка из safetensors формата
+                let vb = VarBuilder::from_buffered_safetensors(model_data, DTYPE, &device)
+                    .context("Error creating VarBuilder from safetensors")?;
+                // XLMRobertaForSequenceClassification для реранкинга использует 1 label (score)
+                let model = XLMRobertaForSequenceClassification::new(1, &config, vb)
+                    .context("Error load reranker model")?;
+                info!("reranker model {} loaded in {:?}", model_name, start.elapsed());
+                Ok(model)
+            }).await?;
+            self.model = Some(result?);
+            Ok(())
+        }
+        else
+        {
+            Ok(())
+        }
     }
-    fn unload_model(mut self) -> Result<()> 
+    fn unload_model(&mut self)
     {
-        self.model = OnceLock::new();
-        Ok(())
+        self.model = None;
     }
-    fn model(&self) -> Result<&BertModel> 
+    fn model(&self) -> Result<&XLMRobertaForSequenceClassification>
     {
-        let model = self.model.get().context("Model is not initialized!")?;
+        let model = self.model.as_ref()
+            .context(format!("Model {} is not initialized!", self.model_name.as_ref()))?;
         Ok(model)
     }
 }
 
 impl BgeReranker 
 {
-    // pub async fn new(emb_cfg: Arc<EmbeddingConfiguration>) -> Result<Self> 
-    // {
-    //     let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
-    //     info!("Инициализация реранкера {} на устройстве {:?}", 
-    //           model_name.as_ref(), &device);
-        
-    //     // Загрузка токенайзера и конфигурации
-    //     let current_dir = std::env::current_dir()?;
-    //     let tokenizer_path = current_dir.join("reranker").join("tokenizer.json");
-    //     let config_path = current_dir.join("reranker").join("config.json");
-    //     let model_path = current_dir.join("reranker").join("model.safetensors");
-        
-    //     let tokenizer_bytes = tokio::fs::read(&tokenizer_path).await?;
-    //     let mut tokenizer = Tokenizer::from_bytes(&tokenizer_bytes)?;
-        
-    //     // Настройка padding для пар запрос-документ
-    //     let padding = tokenizers::PaddingParams 
-    //     {
-    //         strategy: tokenizers::PaddingStrategy::BatchLongest,
-    //         direction: tokenizers::PaddingDirection::Right,
-    //         pad_id: 0,
-    //         pad_type_id: 0,
-    //         pad_token: "[PAD]".to_string(),
-    //         ..Default::default()
-    //     };
-    //     tokenizer.with_padding(Some(padding));
-        
-    //     // Загрузка конфигурации
-    //     let config_str = tokio::fs::read_to_string(&config_path).await?;
-    //     let config: candle_transformers::models::bert::Config = 
-    //         serde_json::from_str(&config_str)?;
-        
-    //     // Загрузка модели
-    //     let vb = VarBuilder::from_pth(&model_path, DType::F32, &device)?;
-    //     let model = candle_transformers::models::bert::BertModel::load(vb, &config)?;
-        
-    //     Ok(Self 
-    //     {
-    //         model,
-    //         tokenizer,
-    //         device,
-    //     })
-    // }
-
     pub async fn new(emb_config: Arc<EmbeddingConfiguration>) -> Result<Self>
     {
-        info!("Try load tokenizer.json");
+        info!("Try load {}", emb_config.reranker_tokenizer_path.display());
         let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
         info!("Running on device: {:?}", &device);
         let tokenizer_file = &emb_config.reranker_tokenizer_path;
@@ -173,32 +164,54 @@ impl BgeReranker
             embedding_config: emb_config,
             device,
             tokenizer,
-            model: OnceLock::<BertModel>::new()
+            model: None
         };
-        let with_loaded_model = slf.load_model().await?;
-        Ok(with_loaded_model)
+        //let with_loaded_model = slf.load_model().await?;
+        Ok(slf)
     }
 
-    
-    
+    /// Переранжирует кандидатов на основе их релевантности к запросу.
+    ///
+    /// # Процесс реранкинга:
+    ///
+    /// 1. **Подготовка пар**: Каждый кандидат объединяется с запросом
+    /// 2. **Вычисление скоров**: Модель оценивает релевантность каждой пары
+    /// 3. **Сортировка**: Кандидаты сортируются по убыванию скора
+    /// 4. **Отбор топ-K**: Возвращаются только K наиболее релевантных результатов
+    ///
+    /// # Аргументы
+    /// * `query` - Поисковый запрос
+    /// * `candidates` - Итератор кандидатов для переранжирования
+    /// * `top_k` - Количество лучших результатов для возврата
+    ///
+    /// # Возвращает
+    /// Вектор `RerankResult` с отсортированными по релевантности результатами (топ-K)
+    ///
+    /// # Пример
+    /// ```ignore
+    /// let results = reranker.rerank(
+    ///     "налоговая декларация",
+    ///     search_results,
+    ///     5  // Вернуть топ-5 результатов
+    /// ).await?;
+    /// ```
     pub async fn rerank<P: AsRef<str> + ToString, R>(
         &self,
         query: &str,
         candidates: R,
         top_k: usize,
-    ) -> Result<Vec<RerankResult<P>>> 
+    ) -> Result<Vec<RerankResult<P>>>
     where R: IntoIterator<Item = P>
             
     {
         let start = std::time::Instant::now();
         let candidate_vec: Vec<P> = candidates.into_iter().collect();
-        // Подготовка пар для реранкинга
+        // Подготовка пар для реранкинга (query, document)
         let pairs: Vec<(String, String)> = candidate_vec
             .iter()
-            .map(|candidate| 
+            .map(|candidate|
             {
-                let query_text = format!("{} {}", query, candidate.as_ref());
-                (query_text, candidate.as_ref().to_owned())
+                (query.to_string(), candidate.as_ref().to_owned())
             })
             .collect();
         
@@ -224,7 +237,22 @@ impl BgeReranker
         // Возврат топ-K результатов
         Ok(reranked.into_iter().take(top_k).collect())
     }
-    
+    /// Вычисляет скоры релевантности для батча пар (query, document).
+    ///
+    /// # Процесс вычисления:
+    ///
+    /// 1. **Форматирование**: Объединение пар в формат `[query] [SEP] [document]`
+    /// 2. **Токенизация**: Преобразование текстов в токены с padding
+    /// 3. **Создание тензоров**: token_ids, attention_mask, token_type_ids
+    /// 4. **XLM-RoBERTa forward pass**: Классификация релевантности
+    /// 5. **Извлечение логитов**: Модель возвращает логиты [batch_size, 1]
+    /// 6. **Нормализация**: Sigmoid для преобразования в вероятности [0, 1]
+    ///
+    /// # Аргументы
+    /// * `pairs` - Слайс пар (query, document) для оценки
+    ///
+    /// # Возвращает
+    /// Вектор нормализованных скоров релевантности (по одному на пару)
     async fn compute_scores_batch(&self, pairs: &[(String, String)]) -> Result<Vec<f32>> 
     {
         let device = &self.device;
@@ -261,23 +289,25 @@ impl BgeReranker
         let attention_mask = Tensor::stack(&attention_masks, 0)?;
         let token_type_ids = token_ids.zeros_like()?;
         
-        // Прямой проход
-        let output = self.model()?.forward(&token_ids, &token_type_ids, Some(&attention_mask))?;
-        
-        // Извлечение скорингов (берем embedding первого токена [CLS])
-        let scores = output
-            .narrow(1, 0, 1).context("Error narrow params")?  // Берем первый токен
-            .squeeze(1).context("Error squeeze")?       // Убираем размерность токенов
-            .to_vec2::<f32>().context("Error vec ranking")?;
-        //TODO проверить правильно ли сделал размерность...
-        let first_scrore = scores.first().context("Scores is empty!")?;
-        // Нормализация скорингов через sigmoid
-        let scores = first_scrore
-            .into_iter()
-            .map(|score| 1.0 / (1.0 + (-*score).exp())) // Sigmoid
+        // Прямой проход через XLM-RoBERTa classifier
+        // output shape: [batch_size, num_labels] (для реранкинга num_labels=1)
+        let logits = self.model()?.forward(&token_ids, &attention_mask, &token_type_ids)?;
+
+        // Извлечение скоров (логитов) из тензора
+        // Для sequence classification с 1 label: [batch_size, 1] -> [batch_size]
+        let scores = logits
+            .squeeze(1)?  // [batch_size, 1] -> [batch_size]
+            .to_vec1::<f32>()  // Преобразуем в Vec<f32>
+            .context("Error converting scores to vector")?;
+
+        // Нормализация скорингов через sigmoid: σ(x) = 1 / (1 + e^(-x))
+        // Преобразует скор в вероятность релевантности в диапазоне [0, 1]
+        let normalized_scores: Vec<f32> = scores
+            .iter()
+            .map(|&score| 1.0 / (1.0 + (-score).exp()))
             .collect();
-        
-        Ok(scores)
+
+        Ok(normalized_scores)
     }
 }
 
