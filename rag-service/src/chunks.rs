@@ -17,11 +17,11 @@ pub async fn get_chunks(sign_date: Date, number: &str, model: &RetriverModel) ->
 
     let mut chunks = Vec::with_capacity(result.node_count());
     info!("Ноды документы были успешно получены: {} шт.", result.node_count());
-    let chunker = Chunker::new(&model).await.unwrap();
+    let chunker = Chunker::new(&model).await?;
     for node in &result
     {
         //бьем текст на куски тут и для каждого создаем чанку
-        let splitted = chunker.split_text(node.converted_content()).await.unwrap();
+        let splitted = chunker.split_text(node.converted_content()).await?;
         for text in splitted
         {
             let chunk = Chunk

@@ -1,3 +1,4 @@
+import Error from '@/components/toasts/Error.ts';
 import { useSound } from '@/composables/useSound';
 import { useTheme } from '@/composables/useTheme';
 import { NButton } from 'naive-ui';
@@ -22,7 +23,7 @@ class NotificationService
         //const t =  useToast().error(body, title);
         //console.log(t);
         this.sound.play_sound('error');
-        const t =  toast.error(title, {
+        let t = toast.error(h(Error, {title, body}), {
         theme: get_current_theme().value,
         });
         console.error(t);
@@ -38,8 +39,18 @@ class NotificationService
         //для примера можно сделать свои теплейты для уведомлений
         //const toast = useToast().authenticationError({body: "БОДИ", title: "TITLE", type: 'error'})
     }
+    info(title: string, body?: string)
+    {
+         const t =  toast.info(title, {
+        theme: get_current_theme().value,
+        });
+        console.log(t);
+        //для примера можно сделать свои теплейты для уведомлений
+        //const toast = useToast().authenticationError({body: "БОДИ", title: "TITLE", type: 'error'})
+    }
     
 }
+
 
 const notify_service = new NotificationService();
 export {notify_service}

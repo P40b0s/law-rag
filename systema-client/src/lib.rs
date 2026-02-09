@@ -10,17 +10,19 @@ mod converter;
 pub use error::Error;
 mod logger;
 mod parser;
-use crate::{actual_redactions_client::{ActualRedactionsClient}, error::Result, models::ContentItem};
+use crate::{actual_redactions_client::ActualRedactionsClient, error::Result, models::{ContentItem}};
 use std::{collections::BTreeMap, fmt::Debug};
 use scraper::{Selector};
 use tracing::{debug, info};
 use utilites::Date;
 pub use document::{DocumentNode, DocumentNodes};
 pub use converter::Converter;
+pub use crate::models::SystemaDocumentCard;
 
 pub struct SystemaClient
 {
 }
+
 impl SystemaClient
 {
     ///Date::new_date(29, 05, 2024), "102-ФЗ"
@@ -88,6 +90,12 @@ impl SystemaClient
         //tokio::fs::write("contents.json", &serde_json::to_string_pretty(&ci).unwrap()).await;
         Ok(document_nodes)
 
+    }
+
+    pub async fn get_documents_list(&self, page: usize) -> Result<Vec<SystemaDocumentCard>>
+    {
+        let documents = ActualRedactionsClient::get_documents(page).await?;
+        Ok(documents)
     }
 }
 #[cfg(test)]

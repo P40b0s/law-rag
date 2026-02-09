@@ -1,14 +1,15 @@
-import { match } from "ts-pattern";
 import emitter from "@/services/emitter";
 import {api_path} from '@/services/http_service/http_client'
+import { ServiceStatusSchema } from "@/types/service_status";
 import { Task, TaskDeleteSchema, TaskEventSchema, TaskSchema } from "@/types/task";
+import { match } from "@globalart/oxide";
 class EventSourceService
 {
     evtSource: EventSource;
     constructor(uri: string)
     {
         console.log(uri)
-       this.evtSource = new EventSource(uri);
+        this.evtSource = new EventSource(uri);
         this.evtSource.onmessage = (event) => 
         {      
             console.log(`message: ${event.data}`);
@@ -17,33 +18,22 @@ class EventSourceService
         {
             let cmd: Commands =  JSON.parse(c.data); 
             console.log(`Получена команда: ${cmd.event} + контент: `, cmd.content);
-            match(cmd.event)
-                .with("update_profile", () =>
-                {
-                    emitter.emit('update_profile')
-                })
-                .with('delete_packet', () =>
-                {
-                    emitter.emit('delete_packet', cmd.content as string);
-                })
-                .with('add_task', () =>
-                {
-                    emitter.emit('add_task', TaskEventSchema.parse(cmd.content));
-                })
-                .with('edit_task', () =>
-                {
-                    emitter.emit('edit_task', TaskEventSchema.parse(cmd.content));
-                })
-                .with('delete_task', () =>
-                {
-                    emitter.emit('delete_task', TaskDeleteSchema.parse(cmd.content));
-                })
-                
+            match(cmd.event,
+                [
+                    ["status_message", () =>
+                        {
+                            const status = ServiceStatusSchema.parse(cmd.content);
+                            emitter.emit('service_status', status);
+                        }
+                    ],
+                () => "Неизвестная команда"
+                ]
+            );
         })
     }
 } 
 
-type SSECommands = "update_profile" | "delete_packet" | "add_task" | "edit_task" | "delete_task"
+type SSECommands = "status_message";
 type Commands = 
 {
     event: SSECommands,

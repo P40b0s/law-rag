@@ -33,8 +33,14 @@ pub fn documents_router(app_state: Arc<AppState>) -> Router
         .route(&super::with_api_version(super::ApiVersion::V1,"/documents/request_document"), 
         post(request_document))
 
+    .route(&super::with_api_version(super::ApiVersion::V1,"/documents/{offset}"), 
+        get(get_documents))
+
         .route(&super::with_api_version(super::ApiVersion::V1,"/documents/embedding_document/{hash}"), 
         get(embedding_document))
+
+        .route(&super::with_api_version(super::ApiVersion::V1,"/health_check"), 
+        get(health_check))
 
         .route(&super::with_api_version(super::ApiVersion::V1,"/documents/generation_request"), 
         post(generation_request))
@@ -120,6 +126,29 @@ pub async fn request_document(
     Ok((
         StatusCode::OK,
         Json(doc),
+    ).into_response())
+}
+pub async fn health_check(
+    ConnectInfo(_): ConnectInfo<SocketAddr>,
+    State(app_state): State<Arc<AppState>>,)
+-> Result<Response<Body>, Error>
+{
+    Ok((
+        StatusCode::OK,
+    ).into_response())
+}
+
+pub async fn get_documents(
+    ConnectInfo(_): ConnectInfo<SocketAddr>,
+    State(app_state): State<Arc<AppState>>,
+    Path(offset): Path<u32>)
+-> Result<Response<Body>, Error>
+{
+    let service = app_state.get_services();
+    let docs = service.documents_service.get_documents_list(offset, 30).await?;
+    Ok((
+        StatusCode::OK,
+        Json(docs),
     ).into_response())
 }
 pub async fn embedding_document(

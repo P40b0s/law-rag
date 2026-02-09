@@ -112,6 +112,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_sqlite_jsonb",
+ "systema-client",
  "thiserror 2.0.17",
  "tokio",
  "tokio-test",

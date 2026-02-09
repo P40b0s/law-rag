@@ -77,11 +77,5 @@ mod tests
                 chunks.push(chunk);
             }
         }
-       
-        for chunk in &chunks
-        {
-           
-            debug!("chunk created: {:#?}", chunk);
-        }
     }
 }

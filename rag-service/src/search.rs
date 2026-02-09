@@ -17,7 +17,7 @@ mod tests
     use crate::logger;
 
     #[tokio::test]
-    async fn test_search()
+    async fn search()
     {
         logger::init();
         let emb_cfg = Arc::new(EmbeddingConfiguration::default());
@@ -28,7 +28,7 @@ mod tests
         let qconfig = QdrantConfig
         {
             url: "http://localhost:6334".to_owned(),
-            collection_name: "test_collection".to_owned(),
+            collection_name: "law_collection".to_owned(),
             distance: database::Distance::Cosine
         };
         let qdrant = database::QdrantManager::new(qconfig, &retriver, &reranker_client).await.unwrap();
@@ -79,7 +79,7 @@ mod tests
 
 
     #[tokio::test]
-    async fn test_load()
+    async fn load()
     {
         logger::init();
         let emb_cfg = Arc::new(EmbeddingConfiguration::default());

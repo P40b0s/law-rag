@@ -28,6 +28,8 @@ pub enum Error
     ModelsError(String),
     #[error("Уже идет обработка документа: `{0}`")]
     EmbeddingInProgress(String),
+    #[error(transparent)]
+    SystemaApiError(#[from] systema_client::Error),
 }
 
 impl Error

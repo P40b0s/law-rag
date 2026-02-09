@@ -28,7 +28,7 @@ impl SSEService
 
     pub fn status_message(&self, status: ServiceStatus)
     {
-        let command = SSECommand::StatusMessage { status };
+        let command = SSECommand::StatusMessage(status);
         self.0.send_command(command);
     }
 }
@@ -39,7 +39,7 @@ impl SSEService
 #[serde(rename_all="snake_case")]
 pub enum SSECommand
 {
-    StatusMessage {status: ServiceStatus},
+    StatusMessage(ServiceStatus),
 }
 
 

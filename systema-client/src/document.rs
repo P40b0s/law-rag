@@ -282,19 +282,63 @@ impl<C: ToString + Debug> DocumentNodes<C>
     }
     
     // Найти ВСЕХ родителей (все уровни)
-    pub fn find_all_parents(&self, start: usize, end: usize, lvl: usize) -> Vec<&DocumentNode<C>> 
+    pub fn find_all_parents(&self, start: usize, end: usize, lvl: usize) -> Vec<&DocumentNode<C>>
     {
+        use tracing::{info, warn};
+
         let mut result = Vec::new();
         let mut current = Some((start, end, lvl));
+        let mut iterations = 0;
+        let max_iterations = 10; // Максимум 10 уровней вложенности
+        let mut prev_lvl = lvl;
+
+        info!("Finding parents for node: start={}, end={}, lvl={}", start, end, lvl);
+
         while let Some((start, end, lvl)) = current && lvl > 0
         {
+            iterations += 1;
+
+            // Защита от бесконечного цикла
+            if iterations > max_iterations {
+                warn!("Reached max iterations ({}) in find_all_parents, breaking. Current: start={}, end={}, lvl={}",
+                    max_iterations, start, end, lvl);
+                break;
+            }
+
             if let Some(parent) = self.find_parent_node_by_range(start, end, lvl)
             {
-                //info!("find parent {:?}", parent);
+                info!("Found parent at iteration {}: lvl={}, prev_lvl={}", iterations, parent.content_lvl, prev_lvl);
+
+                // КРИТИЧЕСКАЯ ПРОВЕРКА: родитель должен быть на более высоком уровне (меньший lvl)
+                if parent.content_lvl >= prev_lvl {
+                    warn!("Parent level ({}) >= current level ({}), possible circular reference! Breaking.",
+                        parent.content_lvl, prev_lvl);
+                    break;
+                }
+
+                // Проверка на самоссылку
+                if parent.content_start_id == start &&
+                   parent.content_end_id == end &&
+                   parent.content_lvl == lvl
+                {
+                    warn!("Parent points to itself, circular reference detected! Breaking.");
+                    break;
+                }
+
+                prev_lvl = parent.content_lvl;
                 current = Some((parent.content_start_id, parent.content_end_id, parent.content_lvl));
                 result.push(parent);
             }
+            else
+            {
+                // Родитель не найден, выходим
+                info!("No parent found at iteration {}, breaking", iterations);
+                break;
+            }
         }
+
+        info!("Found {} parents in {} iterations", result.len(), iterations);
+
         // Сортируем по уровню (от младшего к старшему)
         result.sort_by_key(|&node| node.content_lvl);
         result

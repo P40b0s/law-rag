@@ -181,7 +181,7 @@ impl DocumentsTable
     }
     pub fn get_documents_without_chunks<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<Vec<DocumentCardDbo>>> + Send + 'a>>
     {
-        Box::pin(async move 
+        Box::pin(async move
         {
             let connection = Arc::clone(&self.connection);
             let sql = [
@@ -192,6 +192,43 @@ impl DocumentsTable
             let docs: Vec<DocumentCardDbo> = sqlx::query_as::<_, DocumentCardDbo>(&sql)
             .fetch_all(&*connection).await?;
             Ok(docs)
+        })
+    }
+
+    pub fn get_documents_paginated<'a>(&'a self, limit: u32, offset: u32) -> Pin<Box<dyn Future<Output = Result<Vec<DocumentCardDbo>>> + Send + 'a>>
+    {
+        Box::pin(async move
+        {
+            let connection = Arc::clone(&self.connection);
+            let sql = [
+                "SELECT  document_uri, document_title, document_hash, document_number, document_sign_date, status, has_embeddings, chunks_count"
+                ," FROM "
+                ,DocumentsTable::name()
+                ," ORDER BY document_sign_date DESC"
+                ," LIMIT ? OFFSET ?"
+            ].concat();
+            let docs: Vec<DocumentCardDbo> = sqlx::query_as::<_, DocumentCardDbo>(&sql)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&*connection).await?;
+            Ok(docs)
+        })
+    }
+
+    pub fn get_documents_count<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<i64>> + Send + 'a>>
+    {
+        Box::pin(async move
+        {
+            let connection = Arc::clone(&self.connection);
+            let sql = [
+                "SELECT COUNT(*) as count"
+                ," FROM "
+                ,DocumentsTable::name()
+            ].concat();
+            let row = sqlx::query(&sql)
+            .fetch_one(&*connection).await?;
+            let count: i64 = row.try_get("count")?;
+            Ok(count)
         })
     }
 
@@ -327,9 +364,10 @@ mod tests
 {
     use std::sync::Arc;
 
+    use tracing::info;
     use utilites::Date;
 
-    use crate::connection;
+    use crate::{connection, logger};
     #[tokio::test]
     async fn test_db()
     {
@@ -347,6 +385,16 @@ mod tests
         &vec![]).await.unwrap();
         let get_doc = table.get_document_by_hash("FE7463FFGEGDGE").await.unwrap();
         let del = table.delete_document("FE7463FFGEGDGE").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_docs()
+    {
+        logger::init();
+        let pool = connection::new_connection("documents").await.unwrap();
+        let table = super::DocumentsTable::new(Arc::new(pool)).await.unwrap();
+        let docs = table.get_documents_paginated(0, 30).await.unwrap();
+        info!("{:?}", docs)
     }
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]

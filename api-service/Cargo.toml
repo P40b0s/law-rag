@@ -30,7 +30,7 @@ lazy_static = "1.4"  # Альтернатива once_cell
 regex="1.12.2"
 if-addrs ="0.14.0"
 
-# systema-client = {path = "../systema-client"}
+systema-client = {path = "../systema-client"}
 embedding = {path = "../embedding"}
 database = {path = "../database"}
 rag-service = {path = "../rag-service"}

@@ -3,7 +3,9 @@ import { Err, match, Ok, Result } from '@globalart/oxide';
 import { schema_parser } from '@/types/schema_parser';
 import { z, ZodType, ZodTypeDef } from 'zod/v3';
 
-export const api_path = import.meta.env.PUBLIC_API_ADDRESSE + ":" + import.meta.env.PUBLIC_API_PORT + "/" + import.meta.env.PUBLIC_API_VERSION + "/";
+// Используем относительный путь для self-hosted приложений
+// Автоматически работает на любом домене/порте
+export const api_path = "/" + import.meta.env.PUBLIC_API_VERSION + "/";
 class HTTPError extends Error {}
 HTTPError.prototype.name = "HTPError";
 

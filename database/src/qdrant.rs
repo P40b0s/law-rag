@@ -2,7 +2,7 @@ use std::fmt::format;
 
 use embedding::{BgeReranker, Chunk, Model, RerankResult};
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 use qdrant_client::qdrant::{
     Condition, CreateCollectionBuilder, FieldCondition, Filter, PointId, PointStruct, ScoredPoint, SearchPoints, SearchPointsBuilder, UpsertPointsBuilder, Value, WithPayloadSelector
@@ -25,6 +25,7 @@ pub struct QdrantPayload
     pub text: String,                // Оригинальный текст чанка
     //pub embedding_text: String,      // Текст, который был передан в модель
     pub document_uri: String,        // URI исходного документа
+    pub document_hash: String,        // URI исходного документа
     pub document_title: String, // Заголовки документа
     pub document_number: String,    // Номер документа
     pub document_sign_date: String, // Дата подписания документа
@@ -136,13 +137,43 @@ impl<'model> QdrantManager<'model>
         let mut all_ids = Vec::new();
         let chunks_count = chunks.len();
         let doc_hash = chunks.first().map(|c| c.document_url.clone()).unwrap_or(String::new());
+
+        info!("Starting to add {} chunks to Qdrant for document {}", chunks_count, doc_hash);
+        let start_time = std::time::Instant::now();
+        let mut last_progress_log = std::time::Instant::now();
+
         // Обрабатываем батчами для эффективности
         for (i, chunk) in chunks.into_iter().enumerate()
         {
+            // Логируем прогресс каждые 10 чанков или каждые 30 секунд
+            if i % 10 == 0 || last_progress_log.elapsed().as_secs() >= 30 {
+                let elapsed = start_time.elapsed();
+                let chunks_per_sec = if elapsed.as_secs() > 0 {
+                    i as f64 / elapsed.as_secs() as f64
+                } else {
+                    0.0
+                };
+                let eta_secs = if chunks_per_sec > 0.0 {
+                    ((chunks_count - i) as f64 / chunks_per_sec) as u64
+                } else {
+                    0
+                };
+
+                info!("Progress: {}/{} chunks ({:.1}%), {:.2} chunks/sec, ETA: {}s",
+                    i, chunks_count,
+                    (i as f64 / chunks_count as f64) * 100.0,
+                    chunks_per_sec,
+                    eta_secs
+                );
+                last_progress_log = std::time::Instant::now();
+            }
+
             let batch_ids = self.process_batch(chunk, chunks_count, i, sender.clone()).await
                 .map_err(|e| ServiceStatus::error(doc_hash.clone(), e));
+
             if let Err(e) = batch_ids
             {
+                error!("Failed to process chunk {}/{}: {}", i + 1, chunks_count, e.message);
                 let error = Error::AnyhowError(anyhow::anyhow!(e.message.clone()));
                 let _ = sender.send(e);
                 return Err(error);
@@ -152,28 +183,66 @@ impl<'model> QdrantManager<'model>
                 all_ids.extend(batch_ids.unwrap());
             }
         }
-        
-        info!("Added {} chunks to Qdrant", all_ids.len());
+
+        let total_time = start_time.elapsed();
+        info!("Successfully added {} chunks to Qdrant in {:?} ({:.2} chunks/sec)",
+            all_ids.len(),
+            total_time,
+            all_ids.len() as f64 / total_time.as_secs_f64()
+        );
+        let _ = sender.send(ServiceStatus::complete(&doc_hash));
         Ok(all_ids)
     }
     
-    async fn process_batch(&self, chunk: Chunk, count: usize, current: usize, sender: tokio::sync::mpsc::UnboundedSender<ServiceStatus>) -> Result<Vec<String>> 
+    async fn process_batch(&self, chunk: Chunk, count: usize, current: usize, sender: tokio::sync::mpsc::UnboundedSender<ServiceStatus>) -> Result<Vec<String>>
     {
+        use tokio::time::{timeout, Duration};
+
         let mut points = Vec::new();
         let dimension = self.retriver_model.dimension;
-        // Получаем эмбеддинг для чанка
-        let embeddings = self.retriver_model.generate_embeddings(&[chunk.content.as_str()]).await?;
+
+        info!("Processing chunk {}/{} (hash: {}, content length: {} bytes)",
+            current + 1, count, chunk.hash, chunk.content.len());
+
+        // Получаем эмбеддинг для чанка с таймаутом
+        let embedding_timeout = Duration::from_secs(300); // 5 минут максимум на один чанк
+        let embeddings_result = timeout(
+            embedding_timeout,
+            self.retriver_model.generate_embeddings(&[chunk.content.as_str()])
+        ).await;
+
+        let embeddings = match embeddings_result {
+            Ok(Ok(emb)) => {
+                info!("Successfully generated embeddings for chunk {}/{}", current + 1, count);
+                emb
+            },
+            Ok(Err(e)) => {
+                error!("Error generating embeddings for chunk {}/{}: {}", current + 1, count, e);
+                return Err(e.into());
+            },
+            Err(_) => {
+                error!("Timeout generating embeddings for chunk {}/{} after {:?}",
+                    current + 1, count, embedding_timeout);
+                return Err(Error::AnyhowError(anyhow::anyhow!(
+                    "Timeout generating embeddings for chunk {}/{}", current + 1, count
+                )));
+            }
+        };
+
         // Проверяем размерность
-        if embeddings.len() != dimension 
+        if embeddings.len() != dimension
         {
+            error!("Vector size mismatch for chunk {}/{}: expected {}, got {}",
+                current + 1, count, dimension, embeddings.len());
             return Err(Error::VectorSizeError(dimension, embeddings.len()));
         }
+
         let process = ServiceStatus::process_qdrant(
             &chunk.hash,
             current,
             count
         );
-      
+
         // Создаем точку для Qdrant
         let point = self.create_point(chunk, embeddings)?;
         points.push(point);
@@ -183,16 +252,33 @@ impl<'model> QdrantManager<'model>
             .map(|p| p.into())
             .collect();
         let builder = UpsertPointsBuilder::new(&self.config.collection_name, point_structs);
-        // Вставляем в Qdrant
-        let _ = self.client.upsert_points(builder.build()).await?;
-        let _sended = sender.send(process);
-        //ошибка отправки, клиент отключился
-        //пока нам это не надо, всеравно все чанки надо загрузить
-        //можно будет сделать отмену опреации
-        // if sended.is_err()
-        // {
 
-        // }
+        // Вставляем в Qdrant с таймаутом
+        info!("Upserting chunk {}/{} to Qdrant", current + 1, count);
+        let upsert_timeout = Duration::from_secs(60); // 1 минута на вставку
+        let upsert_result = timeout(
+            upsert_timeout,
+            self.client.upsert_points(builder.build())
+        ).await;
+
+        match upsert_result {
+            Ok(Ok(_)) => {
+                info!("Successfully upserted chunk {}/{} to Qdrant", current + 1, count);
+            },
+            Ok(Err(e)) => {
+                error!("Error upserting chunk {}/{}: {}", current + 1, count, e);
+                return Err(e.into());
+            },
+            Err(_) => {
+                error!("Timeout upserting chunk {}/{} after {:?}", current + 1, count, upsert_timeout);
+                return Err(Error::AnyhowError(anyhow::anyhow!(
+                    "Timeout upserting chunk {}/{}", current + 1, count
+                )));
+            }
+        }
+
+        let _sended = sender.send(process);
+
         Ok(points.iter().map(|p| p.id.clone()).collect())
     }
     
@@ -212,6 +298,7 @@ impl<'model> QdrantManager<'model>
                 {
                     text: chunk.content,
                     document_uri: chunk.document_url,
+                    document_hash: chunk.hash,
                     document_title: chunk.title,
                     document_number: chunk.number,
                     document_sign_date: chunk.sign_date.to_string(),
@@ -589,6 +676,7 @@ impl SearchResult
             text: String::new(),
             document_uri: String::new(),
             document_title: String::new(),
+            document_hash: String::new(),
             path: String::new(),
             chunk_index: 0,
             document_number: String::new(),

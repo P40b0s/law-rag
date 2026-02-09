@@ -1,5 +1,7 @@
 use std::sync::Arc;
+use database::ServiceStatus;
 use embedding::EmbeddingConfiguration;
+use systema_client::SystemaClient;
 use tracing::error;
 use rag_service::Service;
 use uuid::Uuid;
@@ -29,7 +31,8 @@ impl AppState
         let sse_service = Arc::new(SSEService::new());
         let rag_service = Arc::new(Service::new(configuration.embedding_configuration.clone()).await?);
         let database_service = Arc::new(DatabaseService::new().await?);
-        let documents_service = Arc::new(DocumentsService::new(rag_service.clone(), database_service.clone(), sse_service.clone()));
+        let systema_client = Arc::new(SystemaClient{});
+        let documents_service = Arc::new(DocumentsService::new(rag_service.clone(), database_service.clone(), sse_service.clone(), systema_client));
         let services = Services
         {
             documents_service,
@@ -37,6 +40,17 @@ impl AppState
             rag_service,
             sse_service,
         };
+        // tokio::spawn(
+        //     async move{
+        //         loop {
+        //             tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        //             sse_service.status_message(ServiceStatus::mesage("message 1".to_owned()));
+        //             tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        //             sse_service.status_message(ServiceStatus::mesage("amessage 2".to_owned()));
+        //         }
+               
+        //     }
+        // );
         Ok(Self
         {
             services,

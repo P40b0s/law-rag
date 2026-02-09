@@ -1,505 +1,376 @@
-<template>
-  <div class="documents-manager">
-    <!-- Диалог процесса обработки -->
-    <n-modal
-      v-model:show="showProcessDialog"
-      preset="dialog"
-      title="Процесс обработки документов"
-      :mask-closable="false"
-    >
-      <div class="process-dialog">
-        <n-space vertical>
-          <n-alert
-            v-if="processingError"
-            title="Ошибка обработки"
-            type="error"
-            closable
-            @close="processingError = null"
-          >
-            {{ processingError }}
-          </n-alert>
-          
-          <div v-if="currentProcess">
-            <n-space vertical>
-              <n-progress
-                type="line"
-                :percentage="progressPercentage"
-                :status="progressStatus"
-                :height="24"
-              />
-              <n-text type="info" depth="3">
-                Обрабатывается: {{ currentProcess.hash }}
-              </n-text>
-              <n-text>
-                Статус: {{ currentProcess.status }}
-              </n-text>
-              <n-text>
-                Прогресс: {{ currentProcess.current_chunk }} / {{ currentProcess.overall_chunks }}
-              </n-text>
-            </n-space>
-          </div>
-          
-          <n-empty
-            v-else
-            description="Нет активных процессов обработки"
-          />
-        </n-space>
-      </div>
-      
-      <template #action>
-        <n-button @click="stopProcessing" :disabled="!currentProcess">
-          Остановить
-        </n-button>
-        <n-button type="primary" @click="showProcessDialog = false">
-          Закрыть
-        </n-button>
-      </template>
-    </n-modal>
-
-    <!-- Диалог добавления документа -->
-    <n-modal
-      v-model:show="showAddDialog"
-      preset="dialog"
-      title="Добавить документ"
-    >
-      <n-form
-        ref="addFormRef"
-        :model="newDocument"
-        :rules="addFormRules"
-        label-placement="left"
-        label-width="auto"
-        require-mark-placement="right-hanging"
-      >
-        <n-form-item label="URI документа" path="document_uri">
-          <n-input
-            v-model:value="newDocument.document_uri"
-            placeholder="Введите URI документа"
-          />
-        </n-form-item>
-        
-        <n-form-item label="Заголовок" path="document_title">
-          <n-input
-            v-model:value="newDocument.document_title"
-            placeholder="Введите заголовок документа"
-          />
-        </n-form-item>
-        
-        <n-form-item label="Номер документа" path="document_number">
-          <n-input
-            v-model:value="newDocument.document_number"
-            placeholder="Введите номер документа"
-          />
-        </n-form-item>
-        
-        <n-form-item label="Дата подписания" path="document_sign_date">
-          <n-date-picker
-            v-model:value="newDocument.document_sign_date"
+<template lang="pug">
+.documents-manager
+  n-card.search-card(title="Поиск документа" :bordered="false")
+    n-form(
+      ref="formRef"
+      :model="formData"
+      :rules="formRules"
+      label-placement="top"
+      require-mark-placement="right-hanging"
+    )
+      n-grid(:cols="2" :x-gap="16")
+        n-form-item-gi(label="Дата подписания" path="sign_date")
+          n-date-picker(
+            v-model:value="formData.sign_date"
             type="date"
-            placeholder="Выберите дату"
-          />
-        </n-form-item>
-      </n-form>
-      
-      <template #action>
-        <n-button @click="showAddDialog = false">
-          Отмена
-        </n-button>
-        <n-button type="primary" @click="addDocument" :loading="addingDocument">
-          Добавить
-        </n-button>
-      </template>
-    </n-modal>
+            placeholder="Выберите дату подписания"
+            :style="{ width: '100%' }"
+            format="dd.MM.yyyy"
+            value-format="yyyy-MM-dd"
+          )
+        n-form-item-gi(label="Номер документа" path="number")
+          n-input(
+            v-model:value="formData.number"
+            placeholder="Например: 123-ФЗ"
+            clearable
+          )
+            template(#prefix)
+              n-icon(:component="DocumentTextOutline")
 
-    <!-- Панель управления -->
-    <div class="control-panel">
-      <n-space>
-        <n-button type="primary" @click="showAddDialog = true">
-          <template #icon>
-            <n-icon><PlusIcon /></n-icon>
-          </template>
-          Добавить документ
-        </n-button>
-        
-        <n-button @click="showProcessDialog = true" :disabled="!currentProcess">
-          <template #icon>
-            <n-icon><ProcessIcon /></n-icon>
-          </template>
-          Показать процесс
-        </n-button>
-        
-        <n-button type="info" @click="startProcessing" :loading="startingProcessing">
-          <template #icon>
-            <n-icon><PlayIcon /></n-icon>
-          </template>
-          Запустить обработку
-        </n-button>
-        
-        <n-button type="warning" @click="refreshDocuments">
-          <template #icon>
-            <n-icon><RefreshIcon /></n-icon>
-          </template>
-          Обновить
-        </n-button>
-      </n-space>
-    </div>
+      n-space.actions(:justify="'end'")
+        n-button(
+          type="primary"
+          size="large"
+          :loading="isLoading"
+          :disabled="!formData.sign_date || !formData.number"
+          @click="handleRequestDocument"
+        )
+          template(#icon)
+            n-icon(:component="SearchOutline")
+          | Найти документ
 
-    <!-- Таблица документов -->
-    <n-card title="Документы">
-      <n-data-table
-        :columns="columns"
-        :data="documents"
-        :loading="loading"
-        :row-key="(row: Document) => row.document_hash"
-        :pagination="pagination"
-      />
-    </n-card>
-  </div>
+  // Информация о документе
+  n-card.document-info(
+    v-if="currentDocument"
+    :title="currentDocument.document_title"
+    :bordered="false"
+  )
+    template(#header-extra)
+      n-tag(:type="getStatusType(currentDocument.status)" :bordered="false" size="large")
+        template(#icon)
+          n-icon(:component="getStatusIcon(currentDocument.status)")
+        | {{ getStatusLabel(currentDocument.status) }}
+
+    n-space(vertical :size="16")
+      // Основная информация
+      n-descriptions(
+        :column="2"
+        :label-style="{ fontWeight: 'bold' }"
+        bordered
+      )
+        n-descriptions-item(label="Номер документа")
+          n-text(strong) {{ currentDocument.document_number }}
+        n-descriptions-item(label="Дата подписания")
+          n-text {{ formatDate(currentDocument.document_sign_date) }}
+        n-descriptions-item(label="Хеш документа" :span="2")
+          n-text(code) {{ currentDocument.document_hash }}
+        n-descriptions-item(label="URI документа" :span="2")
+          n-text(code) {{ currentDocument.document_uri }}
+
+      // Статистика
+      n-space(:size="16")
+        n-statistic(label="Количество чанков" tabular-nums)
+          template(#prefix)
+            n-icon(:component="DocumentsOutline" size="20")
+          | {{ currentDocument.chunks_count }}
+
+        n-statistic(label="Эмбеддинги")
+          template(#prefix)
+            n-icon(:component="currentDocument.has_embeddings ? CheckmarkCircleOutline : CloseCircleOutline" size="20" :color="currentDocument.has_embeddings ? '#18a058' : '#d03050'")
+          | {{ currentDocument.has_embeddings ? 'Созданы' : 'Не созданы' }}
+
+      n-divider
+
+      // Чанки документа
+      .chunks-section(v-if="currentDocument.chunks && currentDocument.chunks.length > 0")
+        n-text.section-title(strong) Чанки документа
+        n-space(vertical :size="12" style="margin-top: 12px")
+          n-card.chunk-card(
+            v-for="(chunk, index) in currentDocument.chunks"
+            :key="index"
+            size="small"
+            :bordered="false"
+          )
+            template(#header)
+              n-space(align="center")
+                n-icon(:component="DocumentOutline" size="18")
+                n-text Чанк {{'# ' + chunk.meta?.chunk_index ?? index }}
+                n-tag(
+                  v-if="chunk.meta"
+                  size="small"
+                  :bordered="false"
+                )
+                  | {{ chunk.meta.token_count }} токенов
+
+            n-ellipsis(
+              :line-clamp="3"
+              :tooltip="false"
+            )
+              n-text {{ chunk.content }}
+
+      n-divider
+
+      // Действия с документом
+      n-space(:size="12")
+        n-button(
+          type="success"
+          size="large"
+          :loading="isEmbedding"
+          :disabled="currentDocument.has_embeddings"
+          @click="handleCreateEmbeddings"
+        )
+          template(#icon)
+            n-icon(:component="LayersOutline")
+          | {{ currentDocument.has_embeddings ? 'Эмбеддинги созданы' : 'Создать эмбеддинги' }}
+
+        n-button(
+          type="warning"
+          size="large"
+          @click="handleClearDocument"
+        )
+          template(#icon)
+            n-icon(:component="RefreshOutline")
+          | Загрузить другой документ
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, h } from 'vue'
+import { ref, computed } from 'vue'
 import {
-  NDataTable,
-  NButton,
-  NModal,
+  NCard,
   NForm,
-  NFormItem,
+  NFormItemGi,
+  NGrid,
   NInput,
   NDatePicker,
+  NButton,
   NSpace,
-  NCard,
-  NProgress,
-  NText,
-  NEmpty,
-  NAlert,
   NIcon,
-  useMessage,
-  type DataTableColumns,
-  type FormRules,
-  type FormInst
+  NTag,
+  NDescriptions,
+  NDescriptionsItem,
+  NText,
+  NStatistic,
+  NDivider,
+  NEllipsis,
+  type FormInst,
+  type FormRules
 } from 'naive-ui'
-import { Add, Play, Refresh, Eye, Trash, Cog } from '@vicons/fa'
+import {
+  SearchOutline,
+  DocumentTextOutline,
+  DocumentOutline,
+  DocumentsOutline,
+  LayersOutline,
+  RefreshOutline,
+  CheckmarkCircleOutline,
+  CloseCircleOutline,
+  TimeOutline,
+  CloudDoneOutline,
+  AlertCircleOutline,
+  HelpCircleOutline
+} from '@vicons/ionicons5'
+import useEmbeddings from '@/composables/useEmbeddings'
+import { notify_service } from '@/services/notification_service'
+import type { Document, DocumentStatus } from '@/types/document'
+import { DateTime } from '@/services/date'
 
-// Иконки
-const PlusIcon = Add
-const PlayIcon = Play
-const RefreshIcon = Refresh
-const ProcessIcon = Cog
+// Composables
+const {
+  get_document,
+  get_loading,
+  get_embedding,
+  request_document,
+  embedding_current_document,
+  clear_document
+} = useEmbeddings()
 
-// Типы
-interface Document 
-{
-  document_uri: string
-  document_hash: string
-  document_title: string
-  document_number: string
-  document_sign_date: number // timestamp
-  has_embeddings: boolean
-  chunks_count: number
-  chunks: Chunk[]
-  status: number
-}
-
-interface Chunk {
-  id: string
-  content: string
-  // Добавьте другие поля по необходимости
-}
-
-interface ChunkProcess 
-{
-  hash: string
-  current_chunk: number
-  overall_chunks: number
-  status: string
-  is_error: boolean
-}
-
-// Реактивные переменные
-const documents = ref<Document[]>([])
-const loading = ref(false)
-const showAddDialog = ref(false)
-const showProcessDialog = ref(false)
-const currentProcess = ref<ChunkProcess | null>(null)
-const processingError = ref<string | null>(null)
-const addingDocument = ref(false)
-const startingProcessing = ref(false)
-const message = useMessage()
-
-// Форма добавления
-const addFormRef = ref<FormInst | null>(null)
-const newDocument = ref({
-  document_uri: '',
-  document_title: '',
-  document_number: '',
-  document_sign_date: Date.now()
+// Reactive state
+const formRef = ref<FormInst | null>(null)
+const formData = ref({
+  sign_date: null as number | null,
+  number: ''
 })
 
-// Правила валидации
-const addFormRules: FormRules = {
-  document_uri: {
+// Form rules
+const formRules: FormRules = {
+  sign_date: {
+    type: 'number',
     required: true,
-    message: 'URI документа обязателен',
-    trigger: ['input', 'blur']
+    message: 'Выберите дату подписания',
+    trigger: 'change'
   },
-  document_title: {
+  number: {
     required: true,
-    message: 'Заголовок обязателен',
-    trigger: ['input', 'blur']
-  },
-  document_number: {
-    required: true,
-    message: 'Номер документа обязателен',
+    message: 'Введите номер документа',
     trigger: ['input', 'blur']
   }
 }
 
-// Пагинация
-const pagination = {
-  pageSize: 10
-}
+// Computed
+const currentDocument = computed(() => get_document().value)
+const isLoading = computed(() => get_loading().value)
+const isEmbedding = computed(() => get_embedding().value)
 
-// Колонки таблицы
-const columns: DataTableColumns<Document> = [
-  {
-    title: 'Заголовок',
-    key: 'document_title',
-    width: 200,
-    ellipsis: {
-      tooltip: true
-    }
-  },
-  {
-    title: 'Номер',
-    key: 'document_number',
-    width: 120
-  },
-  {
-    title: 'Дата подписания',
-    key: 'document_sign_date',
-    width: 150,
-    render: (row) => {
-      return format(new Date(row.document_sign_date), 'dd.MM.yyyy')
-    }
-  },
-  {
-    title: 'Чанков',
-    key: 'chunks_count',
-    width: 100,
-    align: 'center'
-  },
-  {
-    title: 'Эмбеддинги',
-    key: 'has_embeddings',
-    width: 120,
-    render: (row) => {
-      return row.has_embeddings ? 'Да' : 'Нет'
-    }
-  },
-  {
-    title: 'Статус',
-    key: 'status',
-    width: 100,
-    render: (row) => {
-      const statusMap: Record<number, string> = {
-        0: 'Новый',
-        1: 'Обрабатывается',
-        2: 'Завершен',
-        3: 'Ошибка'
-      }
-      return statusMap[row.status] || 'Неизвестно'
-    }
-  },
-  {
-    title: 'Действия',
-    key: 'actions',
-    width: 200,
-    render: (row) => {
-      return h(NSpace, {}, {
-        default: () => [
-          h(
-            NButton,
-            {
-              size: 'small',
-              type: 'info',
-              onClick: () => viewDocument(row)
-            },
-            {
-              icon: () => h(NIcon, null, { default: () => h(Eye) }),
-              default: 'Просмотр'
-            }
-          ),
-          h(
-            NButton,
-            {
-              size: 'small',
-              type: 'error',
-              onClick: () => deleteDocument(row.document_hash)
-            },
-            {
-              icon: () => h(NIcon, null, { default: () => h(Trash) }),
-              default: 'Удалить'
-            }
-          )
-        ]
-      })
-    }
-  }
-]
+// Methods
+const handleRequestDocument = async () => {
+  if (!formRef.value) return
 
-// Вычисляемые свойства
-const progressPercentage = computed(() => {
-  if (!currentProcess.value) return 0
-  const { current_chunk, overall_chunks } = currentProcess.value
-  return overall_chunks > 0 ? Math.round((current_chunk / overall_chunks) * 100) : 0
-})
-
-const progressStatus = computed(() => {
-  if (!currentProcess.value) return 'default'
-  return currentProcess.value.is_error ? 'error' : 'info'
-})
-
-// Методы
-const fetchDocuments = async () => {
-  loading.value = true
   try {
-    const response = await axios.get('/api/documents')
-    documents.value = response.data
-  } catch (error) {
-    message.error('Ошибка загрузки документов')
-    console.error('Error fetching documents:', error)
-  } finally {
-    loading.value = false
-  }
-}
+    await formRef.value.validate()
 
-const fetchProcessStatus = async () => {
-  try {
-    const response = await axios.get('/api/process/status')
-    currentProcess.value = response.data
-    
-    if (currentProcess.value?.is_error) {
-      processingError.value = currentProcess.value.status
+    if (!formData.value.sign_date || !formData.value.number) {
+      notify_service.warning('Заполните все поля', 'Необходимо указать дату подписания и номер документа')
+      return
+    }
+
+    // Конвертируем timestamp в формат DateTime
+    const date = new Date(formData.value.sign_date)
+    const dateTime = DateTime.parse(date);
+    //   year: date.getFullYear(),
+    //   month: date.getMonth() + 1,
+    //   day: date.getDate(),
+    //   hour: 0,
+    //   minute: 0,
+    //   second: 0
+    // }
+
+    const success = await request_document(dateTime, formData.value.number)
+
+    if (success) {
+      notify_service.success('Документ найден', 'Документ успешно загружен с сервера')
     }
   } catch (error) {
-    console.error('Error fetching process status:', error)
+    console.error('Validation error:', error)
   }
 }
 
-const addDocument = async () => {
-  if (!addFormRef.value) return
-  
-  try {
-    await addFormRef.value.validate()
-    addingDocument.value = true
-    
-    const response = await axios.post('/api/documents', newDocument.value)
-    
-    if (response.data.success) {
-      message.success('Документ добавлен')
-      showAddDialog.value = false
-      resetNewDocument()
-      fetchDocuments()
-    }
-  } catch (error) {
-    message.error('Ошибка добавления документа')
-    console.error('Error adding document:', error)
-  } finally {
-    addingDocument.value = false
+const handleCreateEmbeddings = async () => {
+  if (!currentDocument.value) return
+
+  const success = await embedding_current_document()
+
+  if (success) {
+    notify_service.success('Эмбеддинги созданы', 'Эмбеддинги для документа успешно созданы')
   }
 }
 
-const deleteDocument = async (hash: string) => {
-  try {
-    const response = await axios.delete(`/api/documents/${hash}`)
-    
-    if (response.data.success) {
-      message.success('Документ удален')
-      fetchDocuments()
-    }
-  } catch (error) {
-    message.error('Ошибка удаления документа')
-    console.error('Error deleting document:', error)
+const handleClearDocument = () => {
+  clear_document()
+  formData.value = {
+    sign_date: null,
+    number: ''
   }
 }
 
-const startProcessing = async () => {
-  startingProcessing.value = true
-  try {
-    const response = await axios.post('/api/process/start')
-    
-    if (response.data.success) {
-      message.success('Обработка запущена')
-      showProcessDialog.value = true
-      fetchProcessStatus()
-    }
-  } catch (error) {
-    message.error('Ошибка запуска обработки')
-    console.error('Error starting process:', error)
-  } finally {
-    startingProcessing.value = false
+const formatDate = (dateTime: any): string => {
+  if (!dateTime) return 'Не указана'
+
+  const { day, month, year } = dateTime
+  return `${String(day).padStart(2, '0')}.${String(month).padStart(2, '0')}.${year}`
+}
+
+const getStatusLabel = (status: DocumentStatus): string => {
+  const statusMap: Record<DocumentStatus, string> = {
+    'NotLoaded': 'Не загружен',
+    'Loaded': 'Загружен',
+    'Embedded': 'Эмбеддинги созданы',
+    'Unknown': 'Неизвестно'
   }
+  return statusMap[status] || 'Неизвестно'
 }
 
-const stopProcessing = async () => {
-  try {
-    const response = await axios.post('/api/process/stop')
-    
-    if (response.data.success) {
-      message.success('Обработка остановлена')
-      currentProcess.value = null
-    }
-  } catch (error) {
-    message.error('Ошибка остановки обработки')
-    console.error('Error stopping process:', error)
+const getStatusType = (status: DocumentStatus): 'default' | 'success' | 'warning' | 'error' | 'info' => {
+  const typeMap: Record<DocumentStatus, 'default' | 'success' | 'warning' | 'error' | 'info'> = {
+    'NotLoaded': 'default',
+    'Loaded': 'info',
+    'Embedded': 'success',
+    'Unknown': 'warning'
   }
+  return typeMap[status] || 'default'
 }
 
-const refreshDocuments = () => {
-  fetchDocuments()
-  if (showProcessDialog.value) {
-    fetchProcessStatus()
+const getStatusIcon = (status: DocumentStatus) => {
+  const iconMap: Record<DocumentStatus, any> = {
+    'NotLoaded': TimeOutline,
+    'Loaded': CloudDoneOutline,
+    'Embedded': CheckmarkCircleOutline,
+    'Unknown': HelpCircleOutline
   }
+  return iconMap[status] || AlertCircleOutline
 }
-
-const viewDocument = (doc: Document) => {
-  message.info(`Просмотр документа: ${doc.document_title}`)
-  // Здесь можно реализовать логику просмотра документа
-}
-
-const resetNewDocument = () => {
-  newDocument.value = {
-    document_uri: '',
-    document_title: '',
-    document_number: '',
-    document_sign_date: Date.now()
-  }
-}
-
-// Хуки
-onMounted(() => {
-  fetchDocuments()
-  
-  // Опционально: обновление статуса процесса каждые 5 секунд
-  setInterval(fetchProcessStatus, 5000)
-})
 </script>
 
 <style scoped>
 .documents-manager {
-  padding: 20px;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
 }
 
-.control-panel {
-  margin-bottom: 20px;
+.search-card {
+  margin-bottom: 24px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
 }
 
-.process-dialog {
-  min-height: 150px;
-  padding: 10px 0;
+.document-info {
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+  border-radius: 12px;
+  animation: slideIn 0.3s ease-out;
 }
 
-.n-button {
-  margin-right: 8px;
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.actions {
+  margin-top: 16px;
+}
+
+.chunks-section {
+  margin-top: 16px;
+}
+
+.section-title {
+  font-size: 16px;
+  display: block;
+  margin-bottom: 12px;
+}
+
+.chunk-card {
+  background: linear-gradient(135deg, #f5f7fa 0%, #f0f2f5 100%);
+  border-radius: 8px;
+  transition: all 0.3s ease;
+}
+
+.chunk-card:hover {
+  transform: translateX(4px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+:deep(.n-statistic) {
+  padding: 12px 16px;
+  background: #f8f9fa;
+  border-radius: 8px;
+}
+
+:deep(.n-descriptions) {
+  border-radius: 8px;
+}
+
+:deep(.n-button) {
+  font-weight: 500;
+  transition: all 0.3s ease;
+}
+
+:deep(.n-button:hover) {
+  transform: translateY(-2px);
 }
 </style>

@@ -46,9 +46,9 @@ impl DatabaseService
             Err(Error::ChunksIsEmpty(document.document_sign_date.format(utilites::DateFormat::DotDate), document.document_number.clone()))
         }
     }
-    pub async fn get_documents_cards(&self) -> Result<Vec<Document>, Error>
+    pub async fn get_documents_cards(&self, offset: u32, limit: u32) -> Result<Vec<Document>, Error>
     {
-        let docs = self.database.get_documents_without_chunks().await.inspect_err(|e| error!("{}", e))?;
+        let docs = self.database.get_documents_paginated(limit, offset).await.inspect_err(|e| error!("{}", e))?;
         Ok(docs.into_iter().map(|d| d.into()).collect())
     }
     pub async fn get_document(&self, hash: &str) -> Result<Document, Error>

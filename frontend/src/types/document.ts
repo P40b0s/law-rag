@@ -34,9 +34,10 @@ const DocumentSchema = z.object({
   document_sign_date: date_time_schema,
   has_embeddings: z.boolean(),
   chunks_count: z.number().int().nonnegative(),
-  chunks: z.array(ChunkSchema),
   status: DocumentStatusSchema,
 })
+
+const DocumentArraySchema = z.array(DocumentSchema);
 
 // Экспорт типов
 export type ChunkMeta = z.infer<typeof ChunkMetaSchema>
@@ -44,10 +45,12 @@ export type Chunk = z.infer<typeof ChunkSchema>
 export type DocumentStatus = z.infer<typeof DocumentStatusSchema>
 export type Document = z.infer<typeof DocumentSchema>
 
+
 // Экспорт схем
 export {
   ChunkMetaSchema,
   ChunkSchema,
   DocumentStatusSchema,
   DocumentSchema,
+  DocumentArraySchema
 }

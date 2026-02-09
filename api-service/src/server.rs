@@ -23,7 +23,7 @@ mod tests
     async fn test_running()
     {
         logger::init();
-        super::start().await;
+        let _ = super::start().await;
         loop 
         {
             tokio::time::sleep(tokio::time::Duration::from_millis(60000)).await;

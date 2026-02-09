@@ -51,6 +51,13 @@ export default defineConfig({
     server: {
         port: 8080,
         strictPort: true,
+        // Прокси для перенаправления API запросов на бэкенд в режиме разработки
+        proxy: {
+            '/api_v1': {
+                target: 'http://localhost:8081',
+                changeOrigin: true,
+            },
+        },
     },
     tools: {
         rspack: {

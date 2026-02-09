@@ -20,6 +20,7 @@ pub enum ProcessStatus
     Generation,
     Chunking,
     Message,
+    Complete,
     Error
 }
 
@@ -72,6 +73,17 @@ impl ServiceStatus
             overall_chunks: None,
             message: msg,
             status: ProcessStatus::Message
+        }
+    }
+    pub fn complete(hash: &str) -> Self
+    {
+        Self 
+        { 
+            hash: hash.to_owned(),
+            current_chunk: None,
+            overall_chunks: None,
+            message: format!("Процесс для документа {} завершен", hash),
+            status: ProcessStatus::Complete
         }
     }
     pub fn qdrant_error(error: crate::Error) -> Self

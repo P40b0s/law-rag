@@ -1,4 +1,5 @@
 use std::{collections::HashMap, ops::Deref, sync::{Arc, atomic::AtomicBool}};
+use anyhow::Context;
 use database::{ServiceStatus, QdrantConfig, QdrantManager, SearchResult};
 use embedding::{BgeReranker, Chunk, ChunkMeta, Chunker, EmbeddingConfiguration, Generator, Model, ModelPrompt, RerankResult, RetriverModel};
 use serde::Serialize;
@@ -214,6 +215,7 @@ impl Service
     {
         let mut lock = self.retriver.write().await;
         lock.unload_model();
+        drop(lock);
         let mut lock = self.reranker.write().await;
         lock.unload_model();
         drop(lock);
@@ -256,12 +258,36 @@ impl Service
         info!("Ноды документы были успешно получены: {} шт.", result.node_count());
         let chunker = Chunker::new(&retriver).await.unwrap();
         let mut current = 1;
+        let mut node_index = 0;
+
         for node in &result
         {
+            node_index += 1;
+            info!("Processing node {}/{}, current chunks: {}", node_index, count, current - 1);
+
             //бьем текст на куски тут и для каждого создаем чанку
-            let splitted = chunker.split_text(node.converted_content()).await.unwrap();
-            for text in splitted
+            let content = node.converted_content();
+            info!("Node {}: content length {} bytes", node_index, content.len());
+
+            let splitted = chunker.split_text(content).await
+                .map_err(|e| Error::ChunkingError { source: e })?;
+
+            info!("Node {}: split into {} chunks", node_index, splitted.len());
+
+            for (text_idx, text) in splitted.into_iter().enumerate()
             {
+                debug!("Creating chunk {} from node {} (text_idx: {})", current, node_index, text_idx);
+
+                debug!("Finding parents path for chunk {}", current);
+                let path_start = std::time::Instant::now();
+                let path = result.find_all_parents_as_str(&node);
+                let path_duration = path_start.elapsed();
+                debug!("Parents path found: {} chars in {:?}", path.len(), path_duration);
+
+                if path_duration.as_secs() > 5 {
+                    warn!("Slow find_all_parents_as_str for chunk {}: took {:?}", current, path_duration);
+                }
+
                 let chunk = Chunk
                 {
                     publication_url: result.publication_url().to_owned(),
@@ -270,7 +296,7 @@ impl Service
                     number: result.number().to_owned(),
                     sign_date: result.sign_date().to_owned(),
                     hash: result.hash().to_owned(),
-                    path: result.find_all_parents_as_str(&node),
+                    path,
                     links_hashes: node.links_hashes().cloned(),
                     content: text.content,
                     embeddings: None,
@@ -280,11 +306,18 @@ impl Service
                         token_count: text.token_count
                     })
                 };
-                let _ = sender.send(ServiceStatus::process_chunk(hash, current, count));
+
+                debug!("Sending status for chunk {}", current);
+                let _ = sender.send(ServiceStatus::process_chunk(&hash, current, count));
+
+                debug!("Pushing chunk {} to vector", current);
                 chunks.push(chunk);
                 current +=1;
+                debug!("chunk {}/{} created", current, count);
             }
+            info!("Node {}/{} completed, total chunks created: {}", node_index, count, current - 1);
         }
+        info!("All nodes processed successfully, total chunks: {}", chunks.len());
         Ok(chunks)
     }
 
@@ -327,7 +360,7 @@ mod tests
     use crate::{chunks, logger};
 
      #[tokio::test]
-    async fn test_service()
+    async fn service()
     {
         logger::init();
         let emb_cfg = Arc::new(EmbeddingConfiguration::default());
@@ -364,7 +397,7 @@ mod tests
     }
 
     #[tokio::test]
-    async fn test_search_and_gen()
+    async fn search_and_gen()
     {
         logger::init();
         let emb_cfg = Arc::new(EmbeddingConfiguration::default());

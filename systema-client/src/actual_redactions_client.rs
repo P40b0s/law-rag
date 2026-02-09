@@ -7,7 +7,7 @@ use serde::{ser::{SerializeMap, SerializeSeq}, Serialize, Serializer};
 use serde_json::json;
 use tracing::{info, warn};
 //use serde_json::json;
-use utilites::{http::{Bytes, HeaderName, HyperClient, StatusCode, Uri, ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, HOST, REFERER, UPGRADE_INSECURE_REQUESTS, USER_AGENT}, Date};
+use utilites::{Date, http::{ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, Bytes, HOST, HeaderName, HyperClient, ORIGIN, REFERER, StatusCode, UPGRADE_INSECURE_REQUESTS, USER_AGENT, Uri}};
 use crate::{Error, Result, encoding::encode, models::{Content, Contents, Redaction, SystemaDocumentCard}, search_attributes::{DocumentKind, SearchAttributes}};
 
 //static CLEAR_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\s?id=["]p\d{1,}["]"#).unwrap());
@@ -46,18 +46,19 @@ impl ActualRedactionsClient
 {
     fn client() -> HyperClient
     {
-        HyperClient::new_with_timeout(API_EBPI_URL.parse().unwrap(), 150, 950, 10)
+        HyperClient::new_with_timeout(API_EBPI_URL.parse().unwrap(), 250, 2950, 10)
             .with_headers(Self::headers())
     }
     fn headers() -> Vec<(HeaderName, String)>
     {
         let mut h= Vec::new();
-        h.push((HOST, "pravo.gov.ru".to_owned()));
-        h.push((USER_AGENT, "Mozilla/5.0 (X11; Linux x86_64; rv:127.0) Gecko/20100101 Firefox/127.0".to_owned()));
-        h.push((ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8".to_owned()));
+        h.push((HOST, "actual.pravo.gov.ru:8000".to_owned()));
+        h.push((USER_AGENT, "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0".to_owned()));
+        h.push((ACCEPT, "*/*".to_owned()));
         h.push((ACCEPT_ENCODING, "gzip, deflate".to_owned()));
-        h.push((ACCEPT_LANGUAGE, "ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3".to_owned()));
+        h.push((ACCEPT_LANGUAGE, "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7".to_owned()));
         h.push((REFERER, "http:://pravo.gov.ru".to_owned()));
+        h.push(((ORIGIN, "http://actual.pravo.gov.ru".to_owned())));
         h.push((UPGRADE_INSECURE_REQUESTS, "1".to_owned()));
         h
     }
@@ -182,12 +183,12 @@ impl ActualRedactionsClient
             Err(Error::ApiError(["Ошибка извлечения тела документа из редакции ", &redaction_id.to_string()].concat()))
         }
     }
-
+                                                                                                                                                  //это страница, если в списке больше одной страницы
     /// http://actual.pravo.gov.ru:8000/api/ebpi/attrsearch/?q=[{"AttrId":5,"AttrMode":0,"DateFrom":"20240101","DateTo":"20240620"},{"AttrId":999,"AttrMode":1,"Words":[50,"-date","20220701",0,1]}]
     /// только кавычки в эскейпе -> %22
-    pub async fn search_by_params(date_from: Option<Date>, date_to: Date, kinds: &[super::search_attributes::DocumentKind], pages: u32, number: Option<&str>) -> Result<Vec<SystemaDocumentCard>>
+    pub async fn search_by_params(date_from: Option<Date>, date_to: Date, kinds: &[super::search_attributes::DocumentKind], pages: u32, number: Option<&str>, cur_page: usize) -> Result<Vec<SystemaDocumentCard>>
     {
-        let v = SearchAttributes::get_search_attributes_vec(date_from, date_to, kinds, pages, number);
+        let v = SearchAttributes::get_search_attributes_vec(date_from, date_to, kinds, pages, number, cur_page);
         let attrs = serde_json::to_string(&v).unwrap();
         let client = Self::client().with_path("attrsearch");
         info!("processing request: {:?} with params: {:?}", client.get_uri(), &[("bpa", "ebpi"), ("q", &attrs)]);
@@ -214,7 +215,7 @@ impl ActualRedactionsClient
     {
         let kinds = &[super::search_attributes::DocumentKind::Fz, super::search_attributes::DocumentKind::Fkz ];
         let formatted_date = date.format(utilites::DateFormat::DotDate);
-        let docs = Self::search_by_params(Some(date.clone()), date, kinds, 1, Some(number)).await?;
+        let docs = Self::search_by_params(Some(date.clone()), date, kinds, 1, Some(number), 1).await?;
         if docs.len() > 1
         {
             return Err(Error::ApiError(["По запросу ", "№ ", number, " от ", &formatted_date, " найдено более 1(",&docs.len().to_string(),") документа, уточните запрос"  ].concat()));
@@ -228,6 +229,22 @@ impl ActualRedactionsClient
             docs.into_iter().next().unwrap()
         };
         Ok(doc)
+    }
+
+    //bpa
+	//ebpi
+//q
+//	[{"AttrId":5,"AttrMode":0,"DateTo":"20260209"},{"AttrId":4,"AttrMode":1,"IDParams":[{"Id":107,"Param":0}]},{"AttrId":999,"AttrMode":2,"Words":[50,"type","20220701",0,1]}]
+    pub async fn get_documents(page: usize) -> Result<Vec<SystemaDocumentCard>>
+    {
+        let date_now = Date::now();
+        let kinds = &[super::search_attributes::DocumentKind::Fz, super::search_attributes::DocumentKind::Fkz ];
+        let docs = Self::search_by_params(None, date_now, kinds, 50, None, page).await?;
+        if docs.len() == 0
+        {
+            return Err(Error::DocumentNotFound)
+        }
+        Ok(docs)
     }
 
     pub async fn get_document(date: Date, number: &str) -> Result<DocumentResponse>
@@ -253,6 +270,20 @@ impl ActualRedactionsClient
         };
         Ok(response)
     }
+
+    // await fetch("http://actual.pravo.gov.ru:8000/api/ebpi/attrsearch/?bpa=ebpi&q=%5B%7B%22AttrId%22%3A5%2C%22AttrMode%22%3A0%2C%22DateTo%22%3A%2220260209%22%7D%2C%7B%22AttrId%22%3A4%2C%22AttrMode%22%3A1%2C%22IDParams%22%3A%5B%7B%22Id%22%3A107%2C%22Param%22%3A0%7D%5D%7D%2C%7B%22AttrId%22%3A999%2C%22AttrMode%22%3A2%2C%22Words%22%3A%5B50%2C%22type%22%2C%2220220701%22%2C0%2C1%5D%7D%5D", {
+    // "credentials": "omit",
+    // "headers": {
+    //     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+    //     "Accept": "*/*",
+    //     "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+    // },
+    // "referrer": "http://actual.pravo.gov.ru/",
+    // "method": "GET",
+    // "mode": "cors"
+    // });
+    
+    
 }
 
 pub struct DocumentResponse
@@ -298,7 +329,7 @@ mod tests
     fn test_ser()
     {
         logger::init();
-        let v: Vec<super::SearchAttributes> = super::SearchAttributes::get_search_attributes_vec(Some(Date::new_date(01, 01, 2024)), Date::new_date(20, 06, 2024), &[super::super::search_attributes::DocumentKind::Fz, super::super::search_attributes::DocumentKind::Fkz ], 100, None);
+        let v: Vec<super::SearchAttributes> = super::SearchAttributes::get_search_attributes_vec(Some(Date::new_date(01, 01, 2024)), Date::new_date(20, 06, 2024), &[super::super::search_attributes::DocumentKind::Fz, super::super::search_attributes::DocumentKind::Fkz ], 100, None, 1);
         let s = serde_json::to_value(&v).unwrap();
         let test_data = json!([{"AttrId": 5,"AttrMode": 0,"DateFrom": "20240101","DateTo": "20240620"},{"AttrId": 999,"AttrMode": 1,"Words": [100,"-date","20220701",0,1]}]);
         assert_eq!(s, test_data);
@@ -309,7 +340,7 @@ mod tests
     async fn test_search_request()
     {
         logger::init();
-        let cards = super::ActualRedactionsClient::search_by_params(None, Date::now(), &[super::super::search_attributes::DocumentKind::Fz, super::super::search_attributes::DocumentKind::Fkz ], 1, Some("470-ФЗ")).await.unwrap();
+        let cards = super::ActualRedactionsClient::search_by_params(None, Date::now(), &[super::super::search_attributes::DocumentKind::Fz, super::super::search_attributes::DocumentKind::Fkz ], 1, Some("470-ФЗ"), 1).await.unwrap();
         info!("{}", &cards[0].complex_name);
         assert_eq!(cards[0].hash, "24793801ef77005c45edd990141f89c8067dfb36af0548484059412eb35afe8e");
     }
@@ -317,7 +348,7 @@ mod tests
     async fn test_273_fz()
     {
         logger::init();
-        let cards = super::ActualRedactionsClient::search_by_params(Some(Date::new_date(29, 12, 2012)), Date::new_date(29, 12, 2012), &[super::super::search_attributes::DocumentKind::Fz, super::super::search_attributes::DocumentKind::Fkz ], 1, Some("273-ФЗ")).await.unwrap();
+        let cards = super::ActualRedactionsClient::search_by_params(Some(Date::new_date(29, 12, 2012)), Date::new_date(29, 12, 2012), &[super::super::search_attributes::DocumentKind::Fz, super::super::search_attributes::DocumentKind::Fkz ], 1, Some("273-ФЗ"), 1).await.unwrap();
         //тест поиска старых законов
         info!("{}->{}", &cards[0].complex_name, &cards[0].hash);
         assert_eq!(cards[0].hash, "48c91a7c1a9416aee3ea23eef7c9aca7226cd3eedeebf94b8232532b5115b2dc");
@@ -327,7 +358,7 @@ mod tests
     async fn test_attr_search_request()
     {
         logger::init();
-        let cards = super::ActualRedactionsClient::search_by_params(Some(Date::new_date(29, 1, 2022)), Date::new_date(29, 1, 2022), &[super::super::search_attributes::DocumentKind::Fz, super::super::search_attributes::DocumentKind::Fkz ], 1, Some("573-ФЗ")).await.unwrap();
+        let cards = super::ActualRedactionsClient::search_by_params(Some(Date::new_date(29, 1, 2022)), Date::new_date(29, 1, 2022), &[super::super::search_attributes::DocumentKind::Fz, super::super::search_attributes::DocumentKind::Fkz ], 1, Some("573-ФЗ"), 1).await.unwrap();
         info!("{}", &cards[0].complex_name);
         assert_eq!(cards[0].hash, "24793801ef77005c45edd990141f89c8067dfb36af0548484059412eb35afe8e");
     }
@@ -335,7 +366,7 @@ mod tests
     async fn test_search_new_law()
     {
         logger::init();
-        let cards = super::ActualRedactionsClient::search_by_params(Some(Date::new_date(22, 6, 24)), Date::now(), &[super::super::search_attributes::DocumentKind::Fz, super::super::search_attributes::DocumentKind::Fkz ], 1, Some("155-ФЗ")).await.unwrap();
+        let cards = super::ActualRedactionsClient::search_by_params(Some(Date::new_date(22, 6, 24)), Date::now(), &[super::super::search_attributes::DocumentKind::Fz, super::super::search_attributes::DocumentKind::Fkz ], 1, Some("155-ФЗ"), 1).await.unwrap();
         debug!("{:?}", cards);
         //assert_eq!(cards[0].hash, "24793801ef77005c45edd990141f89c8067dfb36af0548484059412eb35afe8e");
     }
@@ -402,6 +433,13 @@ mod tests
         let red_page = Html::parse_document(&document);
         debug!("{:?}", red_page)
         //assert_eq!(cards[0].hash, "24793801ef77005c45edd990141f89c8067dfb36af0548484059412eb35afe8e");
+    }
+    #[tokio::test]
+    async fn test_get_documents()
+    {
+        logger::init();
+        let cards = super::ActualRedactionsClient::get_documents(2).await.unwrap();
+        debug!("document_cards {:?}", cards);
     }
     #[test]
     fn test_replace_id()

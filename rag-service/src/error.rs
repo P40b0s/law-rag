@@ -33,5 +33,10 @@ pub enum Error
         model: String,
         source: anyhow::Error
     },
+    #[error(transparent)]
+    ChunkingError
+    {
+        source: anyhow::Error
+    },
 
 }

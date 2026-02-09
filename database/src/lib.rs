@@ -3,6 +3,7 @@ mod qdrant;
 mod connection;
 mod documents;
 mod service_status;
+mod logger;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use crate::error::Result;

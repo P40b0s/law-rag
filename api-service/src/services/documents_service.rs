@@ -1,10 +1,11 @@
 use std::{collections::HashMap, sync::{Arc, atomic::AtomicBool}};
 
-use database::{DocumentCardDbo, SearchResult, ServiceStatus};
+use database::{DocumentCardDbo, ProcessStatus, SearchResult, ServiceStatus};
 use embedding::RerankResult;
 use rag_service::{Chunk, Document, DocumentCard, ModelsState};
+use systema_client::SystemaClient;
 use tokio::sync::mpsc::unbounded_channel;
-use tracing::error;
+use tracing::{debug, error};
 use utilites::Date;
 use rag_service::Service;
 
@@ -15,18 +16,20 @@ pub struct DocumentsService
     pub rag_service: Arc<Service>,
     pub database_service: Arc<DatabaseService>,
     pub sse_service: Arc<SSEService>,
+    pub systema_client: Arc<SystemaClient>,
     pub embedding_in_progress: Arc<AtomicBool>
 }
 
 impl DocumentsService
 {
-    pub fn new(rag_service: Arc<Service>, database_service: Arc<DatabaseService>, sse_service: Arc<SSEService>) -> Self
+    pub fn new(rag_service: Arc<Service>, database_service: Arc<DatabaseService>, sse_service: Arc<SSEService>, systema_client: Arc<SystemaClient>) -> Self
     {
         Self 
         { 
             database_service, 
             rag_service: rag_service,
             sse_service,
+            systema_client,
             embedding_in_progress: Arc::new(AtomicBool::new(false))
         }
     }
@@ -41,7 +44,9 @@ impl DocumentsService
                 sse_service.status_message(msg);
             }
         });
+        let date_str = date.format(utilites::DateFormat::DotDate);
         let chunks = self.rag_service.get_chunks(date, number, sender).await?;
+        debug!("Получили {} чанков для документа {} от {}", chunks.len(), number, date_str);
         Ok(chunks.into())
     }
 
@@ -52,6 +57,12 @@ impl DocumentsService
         let _ = self.database_service.add_document(&document).await?;
         let card: DocumentCard = document.into();
         Ok(card)
+    }
+    ///documents directly from pravo.gov.ru
+    pub async fn get_documents_list(&self, offset: u32, limit: u32) -> Result<Vec<Document>, Error>
+    {
+        let documents = self.database_service.get_documents_cards(offset, limit).await?;
+        Ok(documents)
     }
     pub async fn delete_document(&self, hash: &str) -> Result<(), Error>
     {
@@ -90,11 +101,22 @@ impl DocumentsService
         let rag_service = self.rag_service.clone();
         let sse_service = self.sse_service.clone();
         let process_flag = self.embedding_in_progress.clone();
+        let db_service = self.database_service.clone();
         let mut receiver = rag_service.add_chunks_to_qdrant(document.chunks).await?;
+        let hash = hash.to_owned();
         tokio::task::spawn(async move {
+            let mut has_error = false;
             while let Some(msg) = receiver.recv().await
             {
+                if let ProcessStatus::Error = msg.status
+                {
+                    has_error = true;
+                }
                 sse_service.status_message(msg);
+            }
+            if !has_error
+            {
+                let _ = db_service.set_is_embedded(&hash).await;
             }
             process_flag.store(false, std::sync::atomic::Ordering::Release);
         });

@@ -10,11 +10,10 @@ const ServiceStatusSchema = z.object({
     "Generation",
     "Chunking",
     "Message",
+    "Complete",
     "Error"
   ]),
-  message: z.string(),
-  system_prompt: z.string().optional(),
-  model_size: z.number().optional(),
+  message: z.string()
 })
 
 export type ServiceStatus = z.infer<typeof ServiceStatusSchema>

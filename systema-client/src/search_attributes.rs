@@ -75,7 +75,7 @@ impl SearchAttributes
     /// ]
     /// ```
     /// 
-    pub fn get_search_attributes_vec(date_from: Option<Date>, date_to: Date, kinds: &[DocumentKind], pages: u32, number: Option<&str>)-> Vec<Self>
+    pub fn get_search_attributes_vec(date_from: Option<Date>, date_to: Date, kinds: &[DocumentKind], pages: u32, number: Option<&str>, cur_page: usize)-> Vec<Self>
     {
 
         let mut s = Vec::with_capacity(4);
@@ -116,7 +116,7 @@ impl SearchAttributes
         (Self
             { 
                 attr_id: 999,
-                attr_mode: 1,
+                attr_mode: cur_page as u32,
                 date_from: None,
                 date_to: None,
                 id_params: None,
@@ -128,7 +128,7 @@ impl SearchAttributes
     /// только кавычки в эскейпе -> %22
     pub fn get_search_uri(date_from: Option<Date>, date_to: Date, kinds: &[DocumentKind], pages: u32, number: Option<&str>)-> String
     {
-        let v = Self::get_search_attributes_vec(date_from, date_to,  kinds, pages, number);
+        let v = Self::get_search_attributes_vec(date_from, date_to,  kinds, pages, number, 1);
         let attrs = serde_json::to_string(&v).unwrap();
         let url = ["/attrsearch/?q=", &encode(&attrs)].concat().parse().unwrap();
         url
