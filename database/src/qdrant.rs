@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 use qdrant_client::qdrant::{
-    Condition, CreateCollectionBuilder, FieldCondition, Filter, PointId, PointStruct, ScoredPoint, SearchPoints, SearchPointsBuilder, UpsertPointsBuilder, Value, WithPayloadSelector
+    Condition, CreateCollectionBuilder, FieldCondition, Filter, PointId, PointStruct, ScoredPoint, SearchPoints, SearchPointsBuilder, UpdateStatus, UpsertPointsBuilder, Value, WithPayloadSelector
 };
 use qdrant_client::Qdrant;
 use crate::error::{Result, Error};
@@ -550,7 +550,7 @@ impl<'model> QdrantManager<'model>
     }
     
     /// Удаление документа из индекса
-    pub async fn delete_document(&self, hash: &str) -> Result<Option<u64>> 
+    pub async fn delete_document(&self, hash: &str) -> Result<Option<UpdateStatus>> 
     {
         let filter = SearchFilter::new()
             .add_exact_match("document_hash", hash);
@@ -572,7 +572,7 @@ impl<'model> QdrantManager<'model>
         let response = self.client
             .delete_points(delete_request)
             .await?;
-        Ok(response.result.and_then(|r| r.operation_id))
+        Ok(response.result.and_then(|r| Some(r.status())))
     }
 }
 

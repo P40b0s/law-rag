@@ -18,9 +18,9 @@ impl<C: ToString + Debug + AsRef<str>> SystemaActualChunker<C>
     }
 }
 
-impl<C: ToString + Debug + AsRef<str>> Chunker for SystemaActualChunker<C>
+impl<C: ToString + Debug + AsRef<str> + Sync> Chunker for SystemaActualChunker<C>
 {
-    async fn get_chunks<'m, E: Encoder>(&self, encoder: &E, sender: UnboundedSender<ServiceStatus>) -> anyhow::Result<Vec<Chunk>>
+    async fn get_chunks<'m, E: Encoder + Sync + Send>(&self, encoder: &E, sender: UnboundedSender<ServiceStatus>) -> anyhow::Result<Vec<Chunk>>
     {
         let hash = self.0.hash();
         let count = self.0.node_count();
