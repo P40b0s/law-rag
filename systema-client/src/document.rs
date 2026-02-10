@@ -6,7 +6,7 @@ use crate::{Error, actual_redactions_client::DocumentResponse, models::Content};
 const MAX_LVL: usize = 10;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct DocumentNode<C: ToString + Debug>
+pub struct DocumentNode<C: ToString + Debug + AsRef<str>>
 {
     content_type: String,
     ///original http content
@@ -19,7 +19,7 @@ pub struct DocumentNode<C: ToString + Debug>
     content_lvl: usize,
     caption: String,
 }
-impl<C: ToString + Debug> DocumentNode<C> 
+impl<C: ToString + Debug + AsRef<str>> DocumentNode<C> 
 {
     pub fn new(
         content_type: &str,
@@ -78,7 +78,7 @@ impl<C: ToString + Debug> DocumentNode<C>
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct DocumentNodes<C: ToString + Debug>
+pub struct DocumentNodes<C: ToString + Debug + AsRef<str>>
 {
     hash: String,
     redaction_id: u32,
@@ -94,7 +94,7 @@ pub struct DocumentNodes<C: ToString + Debug>
     // Узлы по уровням
     by_level: [Vec<usize>; MAX_LVL], //максимальный уровень
 }
-impl<C: ToString + Debug> IntoIterator for DocumentNodes<C>
+impl<C: ToString + Debug + AsRef<str>> IntoIterator for DocumentNodes<C>
 {
     type Item = DocumentNode<C>;
     type IntoIter = std::vec::IntoIter<Self::Item>;
@@ -104,7 +104,7 @@ impl<C: ToString + Debug> IntoIterator for DocumentNodes<C>
     }
 }
 
-impl<'a, C: ToString + Debug> IntoIterator for &'a DocumentNodes<C>
+impl<'a, C: ToString + Debug + AsRef<str>> IntoIterator for &'a DocumentNodes<C>
 {
     type Item = &'a DocumentNode<C>;
     type IntoIter = std::slice::Iter<'a, DocumentNode<C>>;
@@ -113,14 +113,14 @@ impl<'a, C: ToString + Debug> IntoIterator for &'a DocumentNodes<C>
         self.nodes.iter()
     }
 }
-impl<C: ToString + Debug> Default for  DocumentNodes<C> 
+impl<C: ToString + Debug + AsRef<str>> Default for  DocumentNodes<C> 
 {
     fn default() -> Self 
     {
         Self::new("default".to_owned(), "default".to_owned(), Date::now(), "default".to_owned(), "default".to_owned(), 0)
     }
 }
-impl<C: ToString + Debug> From<DocumentResponse> for DocumentNodes<C>
+impl<C: ToString + Debug + AsRef<str>> From<DocumentResponse> for DocumentNodes<C>
 {
     fn from(value: DocumentResponse) -> Self 
     {
@@ -128,7 +128,7 @@ impl<C: ToString + Debug> From<DocumentResponse> for DocumentNodes<C>
     }
 }
 
-impl<C: ToString + Debug> DocumentNodes<C> 
+impl<C: ToString + Debug + AsRef<str>> DocumentNodes<C> 
 {
     pub fn new(name: String, number: String, sign_date: Date, publication_url: String, hash: String, redaction_id: u32) -> Self 
     {

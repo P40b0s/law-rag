@@ -4,6 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use candle_core::{Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::{bert::{BertModel, Config, DTYPE}};
+use rag_core::Encoder;
 use serde::{Deserialize, Serialize};
 use tokenizers::{PaddingParams, Tokenizer};
 use tracing::{debug, error, info, warn};
@@ -41,6 +42,36 @@ pub struct RetriverModel
     tokenizer: Tokenizer,
     /// Загруженная BERT модель (None если не загружена)
     model: Option<BertModel>
+}
+
+impl Encoder for RetriverModel
+{
+    fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> anyhow::Result<String> 
+    {
+        self.tokenizer.decode(ids, skip_special_tokens)
+            .map_err(|e| anyhow!("Decode error {}", e))
+    }
+
+    fn encode(&self, text: &str, add_special_tokens: bool) -> anyhow::Result<tokenizers::Encoding> 
+    {
+        self.tokenizer.encode(text, add_special_tokens)
+            .map_err(|e| anyhow!("Encode error {}", e))
+    }
+
+    fn max_tokens(&self) -> usize 
+    {
+        self.max_tokens
+    }
+
+    fn overlap_tokens(&self) -> usize 
+    {
+        self.overlap_tokens
+    }
+
+    fn tokenizer(&self) -> &tokenizers::Tokenizer 
+    {
+        &self.tokenizer
+    }
 }
 
 
@@ -191,7 +222,7 @@ impl RetriverModel
         let tokenize_start = std::time::Instant::now();
 
         // Шаг 1: Токенизация всех текстов в батче
-        let tokens = self.tokenizer()
+        let tokens = Model::tokenizer(self)
             .encode_batch(texts.to_vec(), true)
             .map_err(|e| anyhow!("Encode error {}", e))?;
 
@@ -331,7 +362,7 @@ impl RetriverModel
     {
         let start = std::time::Instant::now();
         let model = self.model()?;
-        let tokens = self.tokenizer()
+        let tokens = Model::tokenizer(self)
             .encode(text, true)
             .map_err(|e| anyhow!("Encode error {}", e))?;
 

@@ -1,5 +1,7 @@
 <template lang="pug">
 .documents-list
+  document-add-form(@document-added="handleDocumentAdded")
+
   n-card(title="Список документов" :bordered="false")
     template(#header-extra)
       n-space(align="center")
@@ -55,7 +57,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, h, inject } from 'vue'
+import { ref, computed, onMounted, h, inject, onUnmounted } from 'vue'
 import {
   NCard,
   NSpace,
@@ -86,10 +88,13 @@ import {
 import { http_sevice } from '@/services/http_service/http_service'
 import { notify_service } from '@/services/notification_service'
 import type { Document, DocumentStatus } from '@/types/document'
-import { ServiceStatus } from '@/types/service_status'
+import { type ServiceStatus } from '@/types/service_status'
 import { match } from '@globalart/oxide'
 import { type Emitter } from 'strict-event-emitter'
 import { type Events } from '@/services/emitter'
+import DocumentAddForm from './DocumentAddForm.vue'
+import useModelState from '@/composables/useModelState'
+
 const emitter = inject<Emitter<Events>>('emitter') as Emitter<Events>;
 // Reactive state
 const documents = ref<Document[]>([])
@@ -99,7 +104,8 @@ const statusFilter = ref<DocumentStatus | null>(null)
 const currentPage = ref(1)
 const pageSize = ref(20)
 const totalDocuments = ref(0)
-
+const {get_state} = useModelState()
+//TODO не обновляется статус после окончания ембеддинга
 // Опции для фильтра статуса
 const statusOptions = [
   { label: 'Не загружен', value: 'NotLoaded' as DocumentStatus },
@@ -206,10 +212,12 @@ const handleEmbedding = async (document: Document) =>
 // Обработчик удаления документа
 const handleDelete = async (document: Document) => {
   const success = await http_sevice.documents_service.delete_document(document.document_hash)
-  if (success) {
+  if (success) 
+  {
     // Удаляем документ из списка
     const index = documents.value.findIndex(d => d.document_hash === document.document_hash)
-    if (index !== -1) {
+    if (index !== -1) 
+    {
       documents.value.splice(index, 1)
       totalDocuments.value--
     }
@@ -299,7 +307,7 @@ const columns = computed<DataTableColumns<Document>>(() => [
               {
                 size: 'small',
                 type: row.has_embeddings ? 'success' : 'primary',
-                disabled: row.has_embeddings,
+                disabled: row.has_embeddings || !get_state().value?.retriver,
                 onClick: () => handleEmbedding(row)
               },
               {
@@ -334,13 +342,35 @@ const columns = computed<DataTableColumns<Document>>(() => [
   }
 ])
 
+// Обработчик добавления нового документа
+const handleDocumentAdded = (document: Document) => 
+{
+  // Проверяем, не существует ли уже такой документ в списке
+  const existingIndex = documents.value.findIndex(d => d.document_hash === document.document_hash)
+
+  if (existingIndex !== -1) {
+    // Обновляем существующий документ
+    documents.value[existingIndex] = document
+    notify_service.info('Документ обновлен', 'Документ уже существовал в списке и был обновлен')
+  } else {
+    // Добавляем новый документ в начало списка
+    documents.value.unshift(document)
+    totalDocuments.value++
+    notify_service.success('Документ добавлен', 'Новый документ добавлен в список')
+  }
+}
+
 // Загрузка документов при монтировании компонента
 onMounted(() => {
   loadDocuments()
   emitter.on('service_status', handleServiceStatusUpdate)
 })
 
-const handleServiceStatusUpdate = (status: ServiceStatus) => 
+onUnmounted(() => {
+  emitter.off('service_status', handleServiceStatusUpdate)
+})
+
+const handleServiceStatusUpdate = (status: ServiceStatus) =>
 {
   match(status.status,
     [
@@ -348,14 +378,15 @@ const handleServiceStatusUpdate = (status: ServiceStatus) =>
         {
           // Обновляем документ в списке
           const index = documents.value.findIndex(d => d.document_hash === status.hash)
-          if (index !== -1) 
+          if (index !== -1)
           {
             documents.value[index].has_embeddings = true
             documents.value[index].status = 'Embedded'
           }
         }
       ],
-      ['Error', () => notify_service.error(status.message)]
+      ['Error', () => notify_service.error(status.message)],
+      () => console.warn('service status:', status.status)
     ]
   )
   console.log('Received service status update:', status)

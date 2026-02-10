@@ -1,5 +1,6 @@
 <template lang="pug">
 .status-bar
+  .progress-bar(:class="progressBarClass" :style="{ width: progressWidth }")
   n-space(:size="16" align="center" justify="space-between")
     n-space(:size="12" align="center")
       // Статус подключения к API
@@ -97,9 +98,49 @@ const apiStatus = ref({
 })
 
 // Computed
-const hasProgress = computed(() => {
+const hasProgress = computed(() => 
+{
   return currentStatus.value?.current_chunk !== undefined &&
          currentStatus.value?.overall_chunks !== undefined
+})
+
+const progressWidth = computed(() => 
+{
+  if (!currentStatus.value || !hasProgress.value) 
+  {
+    return '0%'
+  }
+
+  const current = currentStatus.value.current_chunk || 0
+  const total = currentStatus.value.overall_chunks || 1
+  const percentage = Math.min((current / total) * 100, 100)
+
+  return `${percentage}%`
+})
+
+const progressBarClass = computed(() => 
+{
+  if (!currentStatus.value) 
+  {
+    return 'progress-idle'
+  }
+
+  if (currentStatus.value.status === 'Error') 
+  {
+    return 'progress-error'
+  }
+
+  if (['Embedding', 'Chunking', 'Reranking', 'Generation'].includes(currentStatus.value.status)) 
+  {
+    return 'progress-active'
+  }
+
+  if (currentStatus.value.status === 'Complete') 
+  {
+    return 'progress-complete'
+  }
+
+  return 'progress-idle'
 })
 
 const lastUpdateTime = computed(() => {
@@ -225,13 +266,56 @@ onUnmounted(() => {
   left: 0;
   right: 0;
   background: linear-gradient(135deg, #383f49 0%, #212e3a 100%);
-  border-top: 1px solid #427bc0;
   padding: 8px 24px;
   z-index: 1000;
   backdrop-filter: blur(10px);
   box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.05);
   animation: slideUp 0.3s ease-out;
   min-height: 40px;
+}
+
+/* Прогресс-бар */
+.progress-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 3px;
+  transition: width 0.3s ease-out, background-color 0.3s ease;
+  z-index: 1001;
+}
+
+/* Состояния прогресс-бара */
+.progress-idle {
+  background-color: #427bc0;
+  width: 0%;
+}
+
+.progress-active {
+  background: linear-gradient(90deg, #f0a020 0%, #f7ba2a 50%, #f0a020 100%);
+  background-size: 200% 100%;
+  animation: shimmer 2s linear infinite;
+  box-shadow: 0 0 10px rgba(240, 160, 32, 0.5);
+}
+
+.progress-error {
+  background-color: #d03050;
+  box-shadow: 0 0 10px rgba(208, 48, 80, 0.5);
+}
+
+.progress-complete {
+  background-color: #18a058;
+  box-shadow: 0 0 10px rgba(24, 160, 88, 0.5);
+  transition: width 0.5s ease-out, opacity 1s ease 0.5s;
+}
+
+/* Анимация мерцания для активного прогресса */
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
 
 :deep(.n-tag) {

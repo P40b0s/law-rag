@@ -15,6 +15,7 @@ tracing-subscriber.workspace = true
 utilites.workspace = true
 encoding.workspace = true
 regex.workspace = true
+rag-core = {path = "../rag-core"}
 
 [dev-dependencies]
 rand.workspace = true

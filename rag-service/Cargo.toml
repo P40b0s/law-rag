@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-systema-client = {path = "../systema-client"}
+rag-core = {path = "../rag-core"}
 embedding = {path = "../embedding"}
 database = {path = "../database"}
 scraper.workspace = true

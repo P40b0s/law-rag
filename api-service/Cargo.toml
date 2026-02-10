@@ -34,6 +34,8 @@ systema-client = {path = "../systema-client"}
 embedding = {path = "../embedding"}
 database = {path = "../database"}
 rag-service = {path = "../rag-service"}
+rag-core = {path = "../rag-core"}
+chunks_preparation = {path = "../chunks_preparation"}
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true

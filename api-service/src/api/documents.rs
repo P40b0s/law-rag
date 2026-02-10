@@ -45,6 +45,9 @@ pub fn documents_router(app_state: Arc<AppState>) -> Router
         .route(&super::with_api_version(super::ApiVersion::V1,"/documents/generation_request"), 
         post(generation_request))
 
+        .route(&super::with_api_version(super::ApiVersion::V1,"/documents/delete_document/{hash}"), 
+        get(delete_document))
+    
         .with_state(app_state.clone())
         .layer(cors_layer(app_state))
         .layer(TraceLayer::new_for_http().make_span_with(DefaultMakeSpan::default().include_headers(true)))
@@ -61,6 +64,18 @@ pub async fn load_generation_model(
     Ok((
         StatusCode::OK,
         Json(models_state),
+    ).into_response())
+}
+pub async fn delete_document(
+    ConnectInfo(_): ConnectInfo<SocketAddr>,
+    State(app_state): State<Arc<AppState>>,
+    Path(hash): Path<String>)
+-> Result<Response<Body>, Error>
+{
+    let service = app_state.get_services();
+    let models_state = service.documents_service.delete_document(&hash).await?;
+    Ok((
+        StatusCode::OK,
     ).into_response())
 }
 pub async fn unload_generation_model(

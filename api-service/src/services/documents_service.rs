@@ -1,12 +1,14 @@
 use std::{collections::HashMap, sync::{Arc, atomic::AtomicBool}};
 
-use database::{DocumentCardDbo, ProcessStatus, SearchResult, ServiceStatus};
+use database::{DocumentCardDbo, SearchResult};
 use embedding::RerankResult;
-use rag_service::{Chunk, Document, DocumentCard, ModelsState};
+use rag_core::{ProcessStatus, ServiceStatus};
+use rag_service::{Document, DocumentCard, ModelsState};
 use systema_client::SystemaClient;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::{debug, error};
 use utilites::Date;
+use chunks_preparation::{SystemaActualConverter, SystemaActualChunker, Chunker};
 use rag_service::Service;
 
 use crate::{Error, services::{SSEService, database_service::DatabaseService}};
@@ -36,16 +38,25 @@ impl DocumentsService
     //получаем документ от строннего апи и сразу чанкуем его
     pub async fn get_document(&self, date: Date, number: &str) -> Result<Document, Error>
     {
+        let date_str = date.format(utilites::DateFormat::DotDate);
+        let converter = SystemaActualConverter{};
+        let result = 
+            systema_client::SystemaClient::get_document(
+                date,
+                number, converter).await?;
         let (sender, mut receiver) = unbounded_channel();
         let sse_service = self.sse_service.clone();
-        tokio::spawn(async move {
+        tokio::spawn(async move 
+        {
             while let Some(msg) = receiver.recv().await
             {
                 sse_service.status_message(msg);
             }
         });
-        let date_str = date.format(utilites::DateFormat::DotDate);
-        let chunks = self.rag_service.get_chunks(date, number, sender).await?;
+        
+        let chunker = SystemaActualChunker::new(result);
+        let retriver_lock = self.rag_service.get_retriver().await;
+        let chunks = chunker.get_chunks(&*retriver_lock, sender).await?;
         debug!("Получили {} чанков для документа {} от {}", chunks.len(), number, date_str);
         Ok(chunks.into())
     }
@@ -55,7 +66,8 @@ impl DocumentsService
     {
         let document = self.get_document(date, number).await?;
         let _ = self.database_service.add_document(&document).await?;
-        let card: DocumentCard = document.into();
+        let mut card: DocumentCard = document.into();
+        card.status = rag_core::DocumentStatus::Loaded;
         Ok(card)
     }
     ///documents directly from pravo.gov.ru
@@ -66,8 +78,8 @@ impl DocumentsService
     }
     pub async fn delete_document(&self, hash: &str) -> Result<(), Error>
     {
-        let _ = self.database_service.delete(hash).await?;
         let _ = self.rag_service.delete_document_from_qdrant(hash).await?;
+        let _ = self.database_service.delete(hash).await?;
         Ok(())
     }
 
@@ -134,7 +146,8 @@ impl DocumentsService
         let sse_service = self.sse_service.clone();
         let process_flag = self.embedding_in_progress.clone();
         let mut receiver = rag_service.add_chunks_to_qdrant(document.chunks).await?;
-        tokio::task::spawn(async move {
+        tokio::task::spawn(async move 
+        {
             while let Some(msg) = receiver.recv().await
             {
                 sse_service.status_message(msg);

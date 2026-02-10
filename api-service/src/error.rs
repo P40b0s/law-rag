@@ -30,6 +30,11 @@ pub enum Error
     EmbeddingInProgress(String),
     #[error(transparent)]
     SystemaApiError(#[from] systema_client::Error),
+    #[error(transparent)]
+    ChunkingError
+    {
+        source: anyhow::Error
+    },
 }
 
 impl Error

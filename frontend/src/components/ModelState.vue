@@ -1,70 +1,147 @@
 <template lang="pug">
-n-popover(trigger="hover" :show-arrow="false" placement="bottom" width="400" v-if="state")
-  template(#trigger)
-    .status-badge(:class="statusClass")
-      n-icon(size="16" :color="iconColor")
-        component(:is="statusIcon")
-      span.status-text {{ statusText }}
-  
-  .popover-content
-    h3.popover-title Управление моделями
-    .popover-grid
-      .popover-item
-        .popover-label Ретривер:
-        .popover-controls
-          n-switch(
-            :value="state.retriver"
-            @update:value="toggleModel('retriver')"
-            :loading="loadingStates.retriver"
-            size="small"
-            :disabled="loadingStates.generator || loadingStates.reranker"
-          )
-          .popover-status(:class="getStatusClass('retriver')")
-            | {{ state.retriver ? 'Загружен' : 'Выгружен' }}
-      .popover-item
-        .popover-label Генератор:
-        .popover-controls
-          n-switch(
-            :value="state.generator"
-            @update:value="toggleModel('generator')"
-            :loading="loadingStates.generator"
-            size="small"
-            :disabled="loadingStates.retriver || loadingStates.reranker"
-          )
-          .popover-status(:class="getStatusClass('generator')")
-            | {{ state.generator ? 'Загружен' : 'Выгружен' }}
-    
-    .popover-divider
-    
-    .popover-section(v-if="state.system_prompt")
-      h4.popover-subtitle Системный промпт:
-      .popover-system-prompt {{ state.system_prompt }}
-    
-    .popover-section(v-if="state.model_size")
-      h4.popover-subtitle Размер модели:
-      .popover-size {{ formatBytes(state.model_size) }}
-    
-    .popover-footer
+.models-container(v-if="state")
+  // Ретривер модель
+  n-popover(
+    trigger="hover"
+    :show-arrow="true"
+    placement="bottom"
+    width="320"
+  )
+    template(#trigger)
+      n-tag(
+        :type="state.retriver ? 'success' : 'default'"
+        :bordered="false"
+        size="medium"
+        round
+        class="model-tag"
+      )
+        template(#icon)
+          n-icon(:component="SearchCircleOutline" size="18")
+        | Ретривер
+
+    .popover-content
+      .popover-header
+        n-icon(:component="SearchCircleOutline" size="24" :color="state.retriver ? '#18a058' : '#909399'")
+        .popover-title
+          .model-name Ретривер
+          .model-description Эмбеддинг модель для поиска
+
+      .popover-divider
+
+      .popover-control
+        .control-label Состояние:
+        n-switch(
+          :value="state.retriver"
+          @update:value="toggleModel('retriver')"
+          :loading="loadingStates.retriver"
+          :disabled="loadingStates.generator"
+        )
+          template(#checked) Загружен
+          template(#unchecked) Выгружен
+
+      .popover-info(v-if="state.model_size && state.retriver")
+        .info-item
+          n-icon(:component="ServerOutline" size="16")
+          span {{ formatBytes(state.model_size) }}
+
+  // Генератор модель
+  n-popover(
+    trigger="hover"
+    :show-arrow="true"
+    placement="bottom"
+    width="320"
+  )
+    template(#trigger)
+      n-tag(
+        :type="state.generator ? 'success' : 'default'"
+        :bordered="false"
+        size="medium"
+        round
+        class="model-tag"
+      )
+        template(#icon)
+          n-icon(:component="SparklesOutline" size="18")
+        | Генератор
+
+    .popover-content
+      .popover-header
+        n-icon(:component="SparklesOutline" size="24" :color="state.generator ? '#18a058' : '#909399'")
+        .popover-title
+          .model-name Генератор
+          .model-description LLM для генерации ответов
+
+      .popover-divider
+
+      .popover-control
+        .control-label Состояние:
+        n-switch(
+          :value="state.generator"
+          @update:value="toggleModel('generator')"
+          :loading="loadingStates.generator"
+          :disabled="loadingStates.retriver"
+        )
+          template(#checked) Загружен
+          template(#unchecked) Выгружен
+
+      .popover-section(v-if="state.system_prompt")
+        .section-title
+          n-icon(:component="DocumentTextOutline" size="16")
+          span Системный промпт
+        .system-prompt {{ state.system_prompt }}
+
+  // Кнопка управления всеми моделями
+  n-popover(
+    trigger="hover"
+    :show-arrow="true"
+    placement="bottom"
+    width="280"
+  )
+    template(#trigger)
+      n-tag(
+        :type="getOverallStatusType()"
+        :bordered="false"
+        size="medium"
+        round
+        class="model-tag status-tag"
+      )
+        template(#icon)
+          n-icon(:component="LayersOutline" size="18")
+        | {{ loadedCount }}/2
+
+    .popover-content
+      .popover-header
+        n-icon(:component="LayersOutline" size="24" :color="iconColor")
+        .popover-title
+          .model-name Модели
+          .model-description {{ loadedCount }} из 2 загружено
+
+      .popover-divider
+
       .popover-actions
         n-button(
-          size="small"
           type="primary"
           @click="toggleAllModels"
           :loading="isLoadingAny"
           :disabled="isLoadingAny"
+          block
+          secondary
         )
+          template(#icon)
+            n-icon(:component="areAllModelsLoaded ? PowerOutline : PlayCircleOutline")
           | {{ areAllModelsLoaded ? 'Выгрузить все' : 'Загрузить все' }}
-        n-tag(type="info" size="small" round)
-          | {{ loadedCount }}/2 моделей загружено
 </template>
 
 <script lang="ts" setup>
 import { computed, ref, reactive } from 'vue'
 import { NPopover, NIcon, NTag, NSwitch, NButton} from 'naive-ui'
 import {
-  CheckmarkCircleOutline,
-  AlertCircleOutline,
-  TimeOutline
+  SearchCircleOutline,
+  SparklesOutline,
+  LayersOutline,
+  ServerOutline,
+  DocumentTextOutline,
+  PowerOutline,
+  PlayCircleOutline
 } from '@vicons/ionicons5'
 
 import useModelState from '@/composables/useModelState'
@@ -96,37 +173,23 @@ const loadedCount = computed(() => {
 
 const isAllLoaded = computed(() => loadedCount.value === 2)
 const isPartiallyLoaded = computed(() => loadedCount.value > 0 && loadedCount.value < 2)
-const isNoneLoaded = computed(() => loadedCount.value === 0)
 const areAllModelsLoaded = computed(() => isAllLoaded.value)
-const isLoadingAny = computed(() => 
+const isLoadingAny = computed(() =>
   loadingStates.retriver || loadingStates.generator
 )
-
-const statusClass = computed(() => ({
-  'status-all-loaded': isAllLoaded.value,
-  'status-partial': isPartiallyLoaded.value,
-  'status-none': isNoneLoaded.value
-}))
-
-const statusIcon = computed(() => {
-  if (isAllLoaded.value) return CheckmarkCircleOutline
-  if (isPartiallyLoaded.value) return TimeOutline
-  return AlertCircleOutline
-})
 
 const iconColor = computed(() => {
   if (isAllLoaded.value) return '#18a058'
   if (isPartiallyLoaded.value) return '#2080f0'
-  return '#d03050'
-})
-
-const statusText = computed(() => {
-  if (isAllLoaded.value) return 'Все модели загружены'
-  if (isPartiallyLoaded.value) return `Частично (${loadedCount.value}/2)`
-  return 'Модели не загружены'
+  return '#909399'
 })
 
 // Методы
+const getOverallStatusType = (): 'success' | 'warning' | 'default' => {
+  if (isAllLoaded.value) return 'success'
+  if (isPartiallyLoaded.value) return 'warning'
+  return 'default'
+}
 const toggleModel = async (modelKey: ModelKey) => {
   if (!state.value) return
   
@@ -227,154 +290,167 @@ const formatBytes = (bytes: number): string => {
 </script>
 
 <style lang="scss" scoped>
-.status-badge {
+.models-container {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border-radius: 20px;
-  font-size: 14px;
-  font-weight: 500;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.model-tag {
   cursor: pointer;
-  transition: all 0.2s ease;
-  user-select: none;
-  
+  transition: all 0.3s ease;
+  font-weight: 500;
+
   &:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   }
-  
-  &.status-all-loaded {
-    background: rgba(24, 160, 88, 0.1);
-    color: #18a058;
-    border: 1px solid rgba(24, 160, 88, 0.2);
-  }
-  
-  &.status-partial {
-    background: rgba(32, 128, 240, 0.1);
-    color: #2080f0;
-    border: 1px solid rgba(32, 128, 240, 0.2);
-  }
-  
-  &.status-none {
-    background: rgba(208, 48, 80, 0.1);
-    color: #d03050;
-    border: 1px solid rgba(208, 48, 80, 0.2);
+
+  &.status-tag {
+    min-width: 55px;
+    justify-content: center;
   }
 }
 
-.status-text {
-  white-space: nowrap;
-}
-
+// Popover content styles
 .popover-content {
-  padding: 8px 0;
+  padding: 16px;
+}
+
+.popover-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
 }
 
 .popover-title {
-  margin: 0 0 16px 0;
-  padding: 0 16px;
-  font-size: 16px;
-  font-weight: 600;
-  color: #1d1d1f;
-}
+  flex: 1;
 
-.popover-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 16px;
-  padding: 0 16px;
-}
-
-.popover-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.popover-label {
-  font-size: 14px;
-  color: #515767;
-  font-weight: 500;
-  flex-shrink: 0;
-}
-
-.popover-controls {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-shrink: 0;
-}
-
-.popover-status {
-  font-size: 12px;
-  font-weight: 500;
-  min-width: 70px;
-  text-align: right;
-  
-  &.status-loaded {
-    color: #18a058;
+  .model-name {
+    font-size: 16px;
+    font-weight: 600;
+    color: #1d1d1f;
+    margin-bottom: 4px;
   }
-  
-  &.status-unloaded {
-    color: #d03050;
+
+  .model-description {
+    font-size: 13px;
+    color: #909399;
+    line-height: 1.4;
   }
 }
 
 .popover-divider {
   height: 1px;
-  background: #e5e7eb;
-  margin: 16px 16px;
+  background: linear-gradient(90deg, transparent, #e5e7eb 20%, #e5e7eb 80%, transparent);
+  margin: 16px -16px;
 }
 
-.popover-section {
-  padding: 0 16px;
-  margin-bottom: 12px;
-  
-  &:last-child {
-    margin-bottom: 0;
+.popover-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+
+  .control-label {
+    font-size: 14px;
+    color: #606266;
+    font-weight: 500;
   }
 }
 
-.popover-subtitle {
-  margin: 0 0 8px 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: #1d1d1f;
-}
-
-.popover-system-prompt {
-  font-size: 13px;
-  line-height: 1.5;
-  color: #515767;
-  padding: 8px 12px;
-  background: #f7f8fa;
-  border-radius: 6px;
-  border-left: 3px solid #2080f0;
-  word-break: break-word;
-  max-height: 120px;
-  overflow-y: auto;
-}
-
-.popover-size {
-  font-size: 14px;
-  color: #515767;
-  font-weight: 500;
-}
-
-.popover-footer {
-  padding: 0 16px;
-  margin-top: 12px;
+.popover-info {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: linear-gradient(135deg, #f7f8fa 0%, #f0f2f5 100%);
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+
+  .info-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #606266;
+    font-weight: 500;
+  }
+}
+
+.popover-section {
+  margin-top: 16px;
+
+  .section-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #606266;
+    margin-bottom: 8px;
+  }
+
+  .system-prompt {
+    font-size: 12px;
+    line-height: 1.6;
+    color: #606266;
+    padding: 10px 12px;
+    background: linear-gradient(135deg, #fafbfc 0%, #f5f7fa 100%);
+    border-radius: 6px;
+    border-left: 3px solid #2080f0;
+    word-break: break-word;
+    max-height: 150px;
+    overflow-y: auto;
+
+    &::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    &::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    &::-webkit-scrollbar-thumb {
+      background: #dcdfe6;
+      border-radius: 3px;
+
+      &:hover {
+        background: #c0c4cc;
+      }
+    }
+  }
 }
 
 .popover-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+  margin-top: 16px;
+}
+
+// Анимации для тегов
+:deep(.n-tag) {
+  animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+// Улучшенные стили для switch
+:deep(.n-switch) {
+  &.n-switch--active {
+    .n-switch__rail {
+      background: linear-gradient(135deg, #18a058 0%, #2ecc71 100%);
+    }
+  }
 }
 </style>

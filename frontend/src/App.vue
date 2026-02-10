@@ -4,7 +4,6 @@ import { h, inject, onMounted, onUnmounted, ref } from "vue";
 import { darkTheme, lightTheme, NConfigProvider, NNotificationProvider, NModalProvider, type GlobalThemeOverrides, NGlobalStyle, dateRuRU, ruRU } from 'naive-ui';
 import {useTheme} from '@composables/useTheme'
 import { type Events, type Emitter} from "./services/emitter";
-import { useTime } from "./components/notify_timer/use_time_warnings";
 import MainView from './views/MainView.vue';
 //import { route_link } from "./router";
 const emitter = inject<Emitter<Events>>('emitter') as Emitter<Events>;

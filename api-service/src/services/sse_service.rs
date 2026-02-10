@@ -1,5 +1,5 @@
 use std::{convert::Infallible, sync::Arc};
-use rag_service::{ServiceStatus};
+use rag_core::ServiceStatus;
 use serde::Serialize;
 use futures_util::stream::Stream;
 use axum::{extract::State, response::sse::{Event, KeepAlive, Sse}};

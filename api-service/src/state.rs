@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use database::ServiceStatus;
 use embedding::EmbeddingConfiguration;
 use systema_client::SystemaClient;
 use tracing::error;

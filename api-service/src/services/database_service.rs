@@ -1,7 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use database::{DocumentDbo, DocumentsTable};
-use rag_service::{Chunk, Document};
+use rag_core::DocumentStatus;
+use rag_service::{Document};
 use tracing::error;
 use utilites::Date;
 
@@ -34,7 +35,7 @@ impl DatabaseService
                 &first_chunk.title,
                 &document.document_number,
                 &document.document_sign_date,
-                database::DocumentStatus::Loaded,
+                DocumentStatus::Loaded,
                 false,
                 &(document.chunks.len() as u32),
                 document.chunks.as_slice()
@@ -60,7 +61,7 @@ impl DatabaseService
 
     pub async fn set_is_embedded(&self, doc_hash: &str) -> Result<(), Error>
     {
-       let _ = self.database.update_status(database::DocumentStatus::Embedded, doc_hash).await
+       let _ = self.database.update_status(DocumentStatus::Embedded, doc_hash).await
         .inspect_err(|e| error!("{e}"))?;
        Ok(())
     }

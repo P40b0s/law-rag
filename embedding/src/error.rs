@@ -6,8 +6,6 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, thiserror::Error)]
 pub enum Error
 {
-    #[error(transparent)]
-    ApiError(#[from] systema_client::Error),
     #[error("Content structure error: `{0}`")]
     ContentError(String),
     #[error(transparent)]

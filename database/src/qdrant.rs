@@ -1,6 +1,7 @@
 use std::fmt::format;
 
-use embedding::{BgeReranker, Chunk, Model, RerankResult};
+use embedding::{BgeReranker, Model, RerankResult};
+use rag_core::{Chunk, ServiceStatus};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -8,7 +9,6 @@ use qdrant_client::qdrant::{
     Condition, CreateCollectionBuilder, FieldCondition, Filter, PointId, PointStruct, ScoredPoint, SearchPoints, SearchPointsBuilder, UpsertPointsBuilder, Value, WithPayloadSelector
 };
 use qdrant_client::Qdrant;
-use crate::service_status::ServiceStatus;
 use crate::error::{Result, Error};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -136,7 +136,7 @@ impl<'model> QdrantManager<'model>
     ) -> Result<Vec<String>> {
         let mut all_ids = Vec::new();
         let chunks_count = chunks.len();
-        let doc_hash = chunks.first().map(|c| c.document_url.clone()).unwrap_or(String::new());
+        let doc_hash = chunks.first().map(|c| c.hash.clone()).unwrap_or(String::new());
 
         info!("Starting to add {} chunks to Qdrant for document {}", chunks_count, doc_hash);
         let start_time = std::time::Instant::now();

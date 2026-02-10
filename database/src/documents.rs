@@ -1,6 +1,5 @@
+use rag_core::{Chunk, DocumentStatus};
 use std::{pin::Pin, sync::Arc};
-
-use embedding::Chunk;
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool, prelude::FromRow, sqlite::SqliteRow};
 use tracing::{error, warn};
@@ -395,53 +394,5 @@ mod tests
         let table = super::DocumentsTable::new(Arc::new(pool)).await.unwrap();
         let docs = table.get_documents_paginated(0, 30).await.unwrap();
         info!("{:?}", docs)
-    }
-}
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum DocumentStatus
-{
-    NotLoaded,
-    Loaded,
-    Embedded,
-    Unknown
-}
-impl From<DocumentStatus> for u8
-{
-    fn from(value: DocumentStatus) -> Self 
-    {
-        match value
-        {
-            DocumentStatus::NotLoaded => 0,
-            DocumentStatus::Loaded => 1,
-            DocumentStatus::Embedded => 2,
-            DocumentStatus::Unknown => u8::MAX
-        }
-    }
-}
-
-impl From<u8> for DocumentStatus
-{
-    fn from(value: u8) -> Self 
-    {
-        match value
-        {
-            0 => DocumentStatus::NotLoaded,
-            1 => DocumentStatus::Loaded,
-            2 => DocumentStatus::Embedded,
-            _ => DocumentStatus::Unknown,
-        }
-    }
-}
-impl AsRef<str> for DocumentStatus
-{
-    fn as_ref(&self) -> &str 
-    {
-        match self
-        {
-            DocumentStatus::Loaded => "Loaded",
-            DocumentStatus::Embedded => "Embedded",
-            DocumentStatus::NotLoaded => "NotLoaded",
-            DocumentStatus::Unknown => "Unknown"
-        }
     }
 }

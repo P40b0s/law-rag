@@ -11,6 +11,7 @@ serde_json.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+rag-core = {path = "../rag-core"}
 embedding = {path = "../embedding"}
 thiserror.workspace = true
 anyhow.workspace = true

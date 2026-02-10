@@ -1,4 +1,4 @@
-use rag_service::Chunk;
+use rag_core::Chunk;
 use serde::Serialize;
 use utilites::Date;
 

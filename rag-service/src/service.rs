@@ -1,13 +1,14 @@
 use std::{collections::HashMap, ops::Deref, sync::{Arc, atomic::AtomicBool}};
 use anyhow::Context;
-use database::{ServiceStatus, QdrantConfig, QdrantManager, SearchResult};
-use embedding::{BgeReranker, Chunk, ChunkMeta, Chunker, EmbeddingConfiguration, Generator, Model, ModelPrompt, RerankResult, RetriverModel};
+use database::{QdrantConfig, QdrantManager, SearchResult};
+use embedding::{BgeReranker, EmbeddingConfiguration, Generator, Model, ModelPrompt, RerankResult, RetriverModel};
+use rag_core::{Chunk, ServiceStatus};
 use serde::Serialize;
 use tokio::sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender}};
 use tracing::{debug, error, info, warn};
 use utilites::Date;
 
-use crate::{Error, html_converter::HtmlConverter};
+use crate::{Error};
 
 #[derive(Debug, Serialize)]
 pub struct ModelsState
@@ -23,6 +24,7 @@ pub struct Service
     retriver: RwLock<RetriverModel>,
     reranker: RwLock<BgeReranker>,
     generator: RwLock<Generator>,
+    qdrant_initialized: AtomicBool
 
 }
 
@@ -45,6 +47,7 @@ impl Service
             retriver: RwLock::new(retriver),
             reranker: RwLock::new(reranker),
             generator: RwLock::new(generator),
+            qdrant_initialized: AtomicBool::new(false)
         };
        Ok(slf)
     }
@@ -67,6 +70,15 @@ impl Service
             system_prompt,
             model_size
         }
+    }
+
+    pub async fn get_retriver(&self) -> tokio::sync::RwLockReadGuard<'_, RetriverModel>
+    {
+        self.retriver.read().await
+    }
+    pub async fn get_retriver_mut(&self) -> tokio::sync::RwLockWriteGuard<'_, RetriverModel>
+    {
+        self.retriver.write().await
     }
     pub async fn load_generator_model(&self) -> Result<ModelsState, Error>
     {
@@ -99,6 +111,10 @@ impl Service
 
     pub async fn init_qdrant(&self) -> Result<(), Error>
     {
+        if self.qdrant_initialized.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Ok(());
+        }
         let cfg = self.qdrant_config();
         let _ = self.check_load_embedding_models().await?;
         let reranker = self.reranker.read().await;
@@ -200,6 +216,8 @@ impl Service
             let _ = lock_reranker.load_model().await
                 .map_err(|e| Error::ModelLoadError { model: "reranker".to_owned(), source: e })?;
         }
+        let _ = self.init_qdrant().await
+            .inspect_err(|e| error!("Qdrant initialize error: {}", e))?;
         let state = self.models_state().await;
         Ok(state)
     }
@@ -242,85 +260,6 @@ impl Service
         Ok(())
     }
 
-    pub async fn get_chunks(&self, sign_date: Date, number: &str, sender: UnboundedSender<ServiceStatus>) -> Result<Vec<Chunk>, Error>
-    {
-        let _ = self.check_load_embedding_models().await?;
-        let retriver = self.retriver.read().await;
-        let converter = HtmlConverter{};
-        let result = 
-            systema_client::SystemaClient::get_document(
-                sign_date,
-                number, converter).await?;  
-        let hash = result.hash();
-        let count = result.node_count();
-        //если будем разбивать на буольшее количество чанков чем один абзац - один чанк то необходимо поправить
-        let mut chunks = Vec::with_capacity(result.node_count());
-        info!("Ноды документы были успешно получены: {} шт.", result.node_count());
-        let chunker = Chunker::new(&retriver).await.unwrap();
-        let mut current = 1;
-        let mut node_index = 0;
-
-        for node in &result
-        {
-            node_index += 1;
-            info!("Processing node {}/{}, current chunks: {}", node_index, count, current - 1);
-
-            //бьем текст на куски тут и для каждого создаем чанку
-            let content = node.converted_content();
-            info!("Node {}: content length {} bytes", node_index, content.len());
-
-            let splitted = chunker.split_text(content).await
-                .map_err(|e| Error::ChunkingError { source: e })?;
-
-            info!("Node {}: split into {} chunks", node_index, splitted.len());
-
-            for (text_idx, text) in splitted.into_iter().enumerate()
-            {
-                debug!("Creating chunk {} from node {} (text_idx: {})", current, node_index, text_idx);
-
-                debug!("Finding parents path for chunk {}", current);
-                let path_start = std::time::Instant::now();
-                let path = result.find_all_parents_as_str(&node);
-                let path_duration = path_start.elapsed();
-                debug!("Parents path found: {} chars in {:?}", path.len(), path_duration);
-
-                if path_duration.as_secs() > 5 {
-                    warn!("Slow find_all_parents_as_str for chunk {}: took {:?}", current, path_duration);
-                }
-
-                let chunk = Chunk
-                {
-                    publication_url: result.publication_url().to_owned(),
-                    document_url: format!("http://actual.pravo.gov.ru/list.html#hash={}", result.hash()),
-                    title: result.title().to_owned(),
-                    number: result.number().to_owned(),
-                    sign_date: result.sign_date().to_owned(),
-                    hash: result.hash().to_owned(),
-                    path,
-                    links_hashes: node.links_hashes().cloned(),
-                    content: text.content,
-                    embeddings: None,
-                    meta: Some(ChunkMeta
-                    {
-                        chunk_index: text.chunk_index,
-                        token_count: text.token_count
-                    })
-                };
-
-                debug!("Sending status for chunk {}", current);
-                let _ = sender.send(ServiceStatus::process_chunk(&hash, current, count));
-
-                debug!("Pushing chunk {} to vector", current);
-                chunks.push(chunk);
-                current +=1;
-                debug!("chunk {}/{} created", current, count);
-            }
-            info!("Node {}/{} completed, total chunks created: {}", node_index, count, current - 1);
-        }
-        info!("All nodes processed successfully, total chunks: {}", chunks.len());
-        Ok(chunks)
-    }
-
 
     pub async fn genereate_response(self: Arc<Self>, query: &str, context: Vec<RerankResult<SearchResult>>) -> Result<UnboundedReceiver<String>, Error>
     {
@@ -357,44 +296,44 @@ mod tests
     use tracing::info;
     use utilites::Date;
 
-    use crate::{chunks, logger};
+    use crate::{logger};
 
-     #[tokio::test]
-    async fn service()
-    {
-        logger::init();
-        let emb_cfg = Arc::new(EmbeddingConfiguration::default());
-        let service = Arc::new(super::Service::new(emb_cfg).await.unwrap());
-        service.load_embedding_models().await.unwrap();
-        service.init_qdrant().await.unwrap();
-        let date = Date::new_date(31, 07, 2025);
-        let number = "287-ФЗ";  
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            while let Some(output) = receiver.recv().await
-            {
-                info!("{:?}", output);
-            }
-        });
-        let chunks = service.get_chunks(date, number,sender).await.unwrap();
-        let add_qd_clone = Arc::clone(&service);
-        let mut receiver = add_qd_clone.add_chunks_to_qdrant(chunks).await.unwrap();
-        while let Some(output) = receiver.recv().await
-        {
-            info!("{:?}", output);
-        }
-        let query = "Как взыскивается задолженность с налогоплательщика?";
-        let context = service.search(query, 5, 5).await.unwrap();
-        service.unload_embedding_models().await.unwrap();
-        service.load_generator_model().await.unwrap();
-        //до сюда доходит без ошибок, тест генерации отдельно проверю в другом тесте
-        let mut receiver = service.genereate_response(query, context).await.unwrap();
-        info!("GEN RESPONSE:");
-        while let Some(output) = receiver.recv().await
-        {
-            info!("{:?}", output);
-        }
-    }
+    //  #[tokio::test]
+    // async fn service()
+    // {
+    //     logger::init();
+    //     let emb_cfg = Arc::new(EmbeddingConfiguration::default());
+    //     let service = Arc::new(super::Service::new(emb_cfg).await.unwrap());
+    //     service.load_embedding_models().await.unwrap();
+    //     service.init_qdrant().await.unwrap();
+    //     let date = Date::new_date(31, 07, 2025);
+    //     let number = "287-ФЗ";  
+    //     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    //     tokio::spawn(async move {
+    //         while let Some(output) = receiver.recv().await
+    //         {
+    //             info!("{:?}", output);
+    //         }
+    //     });
+    //     let chunks = service.get_chunks(date, number,sender).await.unwrap();
+    //     let add_qd_clone = Arc::clone(&service);
+    //     let mut receiver = add_qd_clone.add_chunks_to_qdrant(chunks).await.unwrap();
+    //     while let Some(output) = receiver.recv().await
+    //     {
+    //         info!("{:?}", output);
+    //     }
+    //     let query = "Как взыскивается задолженность с налогоплательщика?";
+    //     let context = service.search(query, 5, 5).await.unwrap();
+    //     service.unload_embedding_models().await.unwrap();
+    //     service.load_generator_model().await.unwrap();
+    //     //до сюда доходит без ошибок, тест генерации отдельно проверю в другом тесте
+    //     let mut receiver = service.genereate_response(query, context).await.unwrap();
+    //     info!("GEN RESPONSE:");
+    //     while let Some(output) = receiver.recv().await
+    //     {
+    //         info!("{:?}", output);
+    //     }
+    // }
 
     #[tokio::test]
     async fn search_and_gen()

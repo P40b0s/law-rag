@@ -6,7 +6,6 @@ mod models;
 mod search_attributes;
 mod document;
 mod html_to_markdown;
-mod converter;
 pub use error::Error;
 mod logger;
 mod parser;
@@ -16,9 +15,8 @@ use scraper::{Selector};
 use tracing::{debug, info};
 use utilites::Date;
 pub use document::{DocumentNode, DocumentNodes};
-pub use converter::Converter;
 pub use crate::models::SystemaDocumentCard;
-
+use rag_core::Converter;
 pub struct SystemaClient
 {
 }
@@ -27,8 +25,8 @@ impl SystemaClient
 {
     ///Date::new_date(29, 05, 2024), "102-ФЗ"
     pub async fn get_document<CONV, CONT>(sign_date: Date, number: &str, converter: CONV) -> Result<DocumentNodes<CONT>>
-    where   CONT: ToString + Debug,
-            CONV: converter::Converter<CONT>
+    where   CONT: ToString + Debug + AsRef<str>,
+            CONV: Converter<CONT>
 
     {
         let document = ActualRedactionsClient::get_document(sign_date, number).await?;
@@ -101,12 +99,13 @@ impl SystemaClient
 #[cfg(test)]
 mod tests
 {
+    use rag_core::Converter;
     use tracing::info;
     use utilites::Date;
-    use crate::{converter, logger};
+    use crate::{logger};
 
     struct NotConvert;
-    impl converter::Converter<String> for NotConvert
+    impl Converter<String> for NotConvert
     {
         fn convert(&self, html: String) -> String
         {

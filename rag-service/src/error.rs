@@ -9,8 +9,6 @@ pub enum Error
     #[error(transparent)]
     JoinError(#[from] tokio::task::JoinError),
     #[error(transparent)]
-    ApiError(#[from] systema_client::Error),
-    #[error(transparent)]
     EmbeddingsError
     {
         #[from]
@@ -33,10 +31,6 @@ pub enum Error
         model: String,
         source: anyhow::Error
     },
-    #[error(transparent)]
-    ChunkingError
-    {
-        source: anyhow::Error
-    },
+  
 
 }
