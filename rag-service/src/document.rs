@@ -1,9 +1,10 @@
-use database::{DocumentCardDbo, DocumentDbo};
+use database::{CollectionDbo, DocumentCardDbo, DocumentDbo};
 use rag_core::{Chunk, DocumentStatus};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 use utilites::Date;
 use anyhow::Result;
+use uuid::Uuid;
 use crate::{logger};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -17,7 +18,52 @@ pub struct Document
     pub has_embeddings: bool,
     pub chunks_count: u32,
     pub chunks: Vec<Chunk>,
+    pub collection_id: uuid::Uuid,
     pub status: DocumentStatus,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Collection
+{
+    pub id: Uuid,        
+    pub name: String,
+    pub description: String,
+    pub keywords: Vec<String>,
+}
+impl ToString for Collection
+{
+    fn to_string(&self) -> String 
+    {
+        self.description.clone()
+    }
+}
+
+
+impl From<CollectionDbo> for Collection
+{
+    fn from(value: CollectionDbo) -> Self 
+    {
+        Self 
+        { 
+            id: value.id,
+            name: value.name,
+            description: value.description,
+            keywords: value.keywords,
+        }   
+    }
+}
+impl From<Collection> for CollectionDbo
+{
+    fn from(value: Collection) -> Self 
+    {
+        Self 
+        { 
+            id: value.id,
+            name: value.name,
+            description: value.description,
+            keywords: value.keywords,
+        }   
+    }
 }
 
 impl From<DocumentDbo> for Document
@@ -33,6 +79,7 @@ impl From<DocumentDbo> for Document
             document_sign_date: value.document_sign_date,
             has_embeddings: value.has_embeddings,
             chunks_count: value.chunks_count,
+            collection_id: value.collection_id,
             chunks: value.chunks,
             status: value.status
         }   
@@ -53,17 +100,19 @@ impl From<DocumentCardDbo> for Document
             has_embeddings: value.has_embeddings,
             chunks_count: value.chunks_count,
             chunks: Vec::with_capacity(0),
+            collection_id: value.collection_id,
             status: value.status
         }      
     }
 }
 
-impl From<Vec<Chunk>> for Document
+impl Document
 {
-    fn from(value: Vec<Chunk>) -> Self 
+    //Получаем None если чанков нет, иначе создаем документ на основе первого чанка и дополняем его метаданными
+    pub fn from_chunks(chunks: Vec<Chunk>, collection_id: Uuid) -> Option<Self>
     {
-        let first_chunk = value.first().unwrap().clone();
-        Self 
+        let first_chunk = chunks.first()?.clone();
+        Some(Self 
         { 
             document_uri: first_chunk.document_url,
             document_hash: first_chunk.hash,
@@ -71,11 +120,12 @@ impl From<Vec<Chunk>> for Document
             document_number: first_chunk.number,
             document_sign_date: first_chunk.sign_date,
             has_embeddings: false,
-            chunks_count: value.len() as u32,
-            chunks: value,
+            chunks_count: chunks.len() as u32,
+            chunks,
+            collection_id,
             status: DocumentStatus::NotLoaded,
             
-        }
+        })
     }
 }
 
@@ -90,6 +140,7 @@ pub struct DocumentCard
     pub document_sign_date: Date,
     pub has_embeddings: bool,
     pub chunks_count: u32,
+    pub collection_id: Uuid,
     pub status: DocumentStatus,
 }
 
@@ -106,6 +157,7 @@ impl From<DocumentDbo> for DocumentCard
             document_sign_date: value.document_sign_date,
             has_embeddings: value.has_embeddings,
             chunks_count: value.chunks_count,
+            collection_id: value.collection_id,
             status: value.status
         }   
     }
@@ -123,6 +175,7 @@ impl From<Document> for DocumentCard
             document_sign_date: value.document_sign_date,
             has_embeddings: value.has_embeddings,
             chunks_count: value.chunks_count,
+            collection_id: value.collection_id,
             status: value.status
         }      
     }
@@ -141,53 +194,9 @@ impl From<DocumentCardDbo> for DocumentCard
             document_sign_date: value.document_sign_date,
             has_embeddings: value.has_embeddings,
             chunks_count: value.chunks_count,
-            status: value.status
+            status: value.status,
+            collection_id: value.collection_id,
         }      
     }
 }
 
-
-
-
-// pub async fn load_document(number: &str, date: Date, model: &RetriverModel) -> Result<Vec<Chunk>>
-// {
-//     logger::init();
-//     let converter = HtmlConverter{};
-//     let result = 
-//         systema_client::SystemaClient::get_document(
-//             date,
-//             number, converter).await?;  
-
-//     let mut chunks = Vec::with_capacity(result.node_count());
-//     info!("Ноды документы были успешно получены: {} шт.", result.node_count());
-//     let chunker = Chunker::new(&model).await?;
-//     for node in &result
-//     {
-//         //бьем текст на куски тут и для каждого создаем чанку
-//         let splitted = chunker.split_text(node.converted_content()).await?;
-//         for text in splitted
-//         {
-//             let chunk = Chunk
-//             {
-//                 publication_url: result.publication_url().to_owned(),
-//                 document_url: format!("http://actual.pravo.gov.ru/list.html#hash={}", result.hash()),
-//                 title: result.title().to_owned(),
-//                 number: result.number().to_owned(),
-//                 sign_date: result.sign_date().to_owned(),
-//                 hash: result.hash().to_owned(),
-//                 path: result.find_all_parents_as_str(&node),
-//                 links_hashes: node.links_hashes().cloned(),
-//                 content: text.content,
-//                 embeddings: None,
-//                 meta: Some(ChunkMeta
-//                 {
-//                     chunk_index: text.chunk_index,
-//                     token_count: text.token_count
-//                 })
-//             };
-//             chunks.push(chunk);
-//         }
-//     }
-//     Ok(chunks)
-    
-// }

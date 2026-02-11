@@ -33,6 +33,7 @@ const DocumentSchema = z.object({
   document_number: z.string(),
   document_sign_date: date_time_schema,
   has_embeddings: z.boolean(),
+  collection_id: z.string().uuid(),
   chunks_count: z.number().int().nonnegative(),
   status: DocumentStatusSchema,
 })

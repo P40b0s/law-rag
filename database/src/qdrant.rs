@@ -75,17 +75,18 @@ impl From<Distance> for i32
 }
 
 
-pub struct QdrantManager<'model>
+pub struct QdrantManager
 {
     client: Qdrant,
     config: QdrantConfig,
-    retriver_model: &'model embedding::RetriverModel,
-    reranking_model: &'model embedding::BgeReranker
+    dimension: usize,
+    // retriver_model: &'model embedding::RetriverModel,
+    // reranking_model: &'model embedding::BgeReranker
 }
 
-impl<'model> QdrantManager<'model>
+impl QdrantManager
 {
-    pub async fn new(config: QdrantConfig, retriver_model: &'model embedding::RetriverModel, reranking_model: &'model BgeReranker) -> Result<Self> 
+    pub  fn new(config: QdrantConfig, dimension: usize) -> Result<Self> 
     {
         let client = Qdrant::from_url(&config.url)
             .build()?;
@@ -94,8 +95,7 @@ impl<'model> QdrantManager<'model>
         {
             client,
             config,
-            retriver_model,
-            reranking_model
+            dimension
         })
     }
     /// Создание коллекции (если не существует)
@@ -107,7 +107,7 @@ impl<'model> QdrantManager<'model>
             .any(|c| c.name == self.config.collection_name) 
         {
 
-            let vec_params =   qdrant_client::qdrant::VectorParamsBuilder::new(self.retriver_model.dimension as u64, self.config.distance.clone().into()).build();
+            let vec_params =   qdrant_client::qdrant::VectorParamsBuilder::new(self.dimension as u64, self.config.distance.clone().into()).build();
             let vectors_config = qdrant_client::qdrant::VectorsConfig
             {
                 config: Some(qdrant_client::qdrant::vectors_config::Config::Params(vec_params))
@@ -129,9 +129,10 @@ impl<'model> QdrantManager<'model>
     }
     
     /// Добавление чанков с эмбеддингами в Qdrant
-    pub async fn add_chunks_to_qdrant(
+    pub async fn add_chunks_to_qdrant<'model>(
         &self,
         chunks: Vec<Chunk>,
+        retriver_model: &'model embedding::RetriverModel,
         sender: tokio::sync::mpsc::UnboundedSender<ServiceStatus>
     ) -> Result<Vec<String>> {
         let mut all_ids = Vec::new();
@@ -168,7 +169,7 @@ impl<'model> QdrantManager<'model>
                 last_progress_log = std::time::Instant::now();
             }
 
-            let batch_ids = self.process_batch(chunk, chunks_count, i, sender.clone()).await
+            let batch_ids = self.process_batch(chunk, chunks_count, i, retriver_model, sender.clone()).await
                 .map_err(|e| ServiceStatus::error(doc_hash.clone(), e));
 
             if let Err(e) = batch_ids
@@ -194,12 +195,18 @@ impl<'model> QdrantManager<'model>
         Ok(all_ids)
     }
     
-    async fn process_batch(&self, chunk: Chunk, count: usize, current: usize, sender: tokio::sync::mpsc::UnboundedSender<ServiceStatus>) -> Result<Vec<String>>
+    async fn process_batch<'model>(&self,
+        chunk: Chunk,
+        count: usize,
+        current: usize,
+        retriver_model: &'model embedding::RetriverModel,
+        sender: tokio::sync::mpsc::UnboundedSender<ServiceStatus>
+    ) -> Result<Vec<String>>
     {
         use tokio::time::{timeout, Duration};
 
         let mut points = Vec::new();
-        let dimension = self.retriver_model.dimension;
+        let dimension = retriver_model.dimension();
 
         info!("Processing chunk {}/{} (hash: {}, content length: {} bytes)",
             current + 1, count, chunk.hash, chunk.content.len());
@@ -208,7 +215,7 @@ impl<'model> QdrantManager<'model>
         let embedding_timeout = Duration::from_secs(300); // 5 минут максимум на один чанк
         let embeddings_result = timeout(
             embedding_timeout,
-            self.retriver_model.generate_embeddings(&[chunk.content.as_str()])
+            retriver_model.generate_embeddings(&[chunk.content.as_str()])
         ).await;
 
         let embeddings = match embeddings_result {
@@ -309,15 +316,17 @@ impl<'model> QdrantManager<'model>
     }
     
     /// Поиск по семантическому сходству
-    pub async fn semantic_search(
+    pub async fn semantic_search<'model>(
         &self,
         query: &str,
         limit: usize,
         rerank_limit: usize,
+        retriver_model: &'model embedding::RetriverModel,
+        reranker_model: &'model embedding::BgeReranker,
         filter: Option<SearchFilter>,
     ) -> Result<Vec<RerankResult<SearchResult>>> {
         // Получаем эмбеддинг для запроса
-        let query_vector = self.retriver_model.generate_embeddings(&[query]).await?;
+        let query_vector = retriver_model.generate_embeddings(&[query]).await?;
         // Строим запрос к Qdrant
         let mut search_request = SearchPoints 
         {
@@ -351,14 +360,14 @@ impl<'model> QdrantManager<'model>
             .into_iter()
             .map(|sp| SearchResult::from_scored_point(sp))
             .collect();
-        let reranking = self.reranking_model.rerank(query, results, rerank_limit).await
+        let reranking = reranker_model.rerank(query, results, rerank_limit).await
             .inspect_err(|e| tracing::error!("{}", e))?;
         //reranking.into_iter().map(|r| r)
         Ok(reranking)
     }
     
     /// Поиск с гибридным подходом (семантический + ключевые слова)
-    pub async fn hybrid_search(
+    pub async fn hybrid_search<'model>(
         &self,
         query: &str,
         limit: usize,
@@ -366,9 +375,11 @@ impl<'model> QdrantManager<'model>
         filter: Option<SearchFilter>,
         keyword_weight: f32,
         semantic_weight: f32,
+        retriver_model: &'model embedding::RetriverModel,
+        reranker_model: &'model embedding::BgeReranker,
     ) -> Result<Vec<SearchResult>> {
         // 1. Семантический поиск
-        let semantic_results = self.semantic_search(query, limit * 2, rerank_limit * 2, filter.clone()).await?;
+        let semantic_results = self.semantic_search(query, limit * 2, rerank_limit * 2, retriver_model, reranker_model, filter.clone()).await?;
         let semantic_results = semantic_results.into_iter()
         .map(|r| SearchResult
         {
@@ -378,7 +389,7 @@ impl<'model> QdrantManager<'model>
         }).collect();
         // 2. Поиск по ключевым словам (если нужно)
         // Можно использовать BM25 или другие методы
-        let keyword_results = self.keyword_search(query, limit * 2, filter).await?;
+        let keyword_results = self.keyword_search(query, limit * 2, retriver_model.dimension(),filter).await?;
         
         // 3. Объединяем результаты
         let combined = Self::combine_results(
@@ -393,10 +404,11 @@ impl<'model> QdrantManager<'model>
     }
     
     /// Поиск по ключевым словам (используя фильтры Qdrant)
-    async fn keyword_search(
+    async fn keyword_search<'model>(
         &self,
         query: &str,
         limit: usize,
+        dimension: usize,
         filter: Option<SearchFilter>,
     ) -> Result<Vec<SearchResult>> {
         // Извлекаем ключевые слова из запроса
@@ -433,7 +445,7 @@ impl<'model> QdrantManager<'model>
         let search_request = SearchPoints 
         {
             collection_name: self.config.collection_name.clone(),
-            vector: vec![0.0; self.retriver_model.dimension], // Пустой вектор для keyword search
+            vector: vec![0.0; dimension], // Пустой вектор для keyword search
             filter: Some(Filter 
             {
                 should: all_conditions,
@@ -514,10 +526,11 @@ impl<'model> QdrantManager<'model>
     }
     
     /// Получение всех чанков документа
-    pub async fn get_document_chunks(
+    pub async fn get_document_chunks<'model>(
         &self,
         hash: &str,
         limit: Option<usize>,
+        dimension: usize,
     ) -> Result<Vec<SearchResult>> 
     {
         let filter = SearchFilter::new()
@@ -527,7 +540,7 @@ impl<'model> QdrantManager<'model>
         let search_request = SearchPoints 
         {
             collection_name: self.config.collection_name.clone(),
-            vector: vec![0.0; self.retriver_model.dimension],
+            vector: vec![0.0; dimension],
             filter: Some(filter.into()),
             limit: limit.unwrap_or(1000) as u64,
             with_payload: Some(WithPayloadSelector 

@@ -101,7 +101,7 @@ impl RetriverModel
         let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
         info!("Running on device: {:?}", &device);
         let max_tokens = 8192;
-        let dimension = 1024;
+        
 
         // Загрузка и десериализация токенизатора
         let tokenizer_file = &emb_config.retriver_tokenizer_path;
@@ -126,7 +126,7 @@ impl RetriverModel
 
         Ok(Self
         {
-            dimension,
+            dimension: 1024, // Обычно для BERT hidden_size = 1024, но может отличаться в зависимости от модели
             max_tokens,
             overlap_tokens: (max_tokens / 10).min(256), // 10% от max_tokens, но не более 256
             model_name: ModelName::M3,
@@ -411,6 +411,10 @@ impl Model<BertModel, Config> for RetriverModel
     fn model_is_loaded(&self) -> bool 
     {
         self.model.is_some()
+    }
+    fn dimension(&self) -> usize 
+    {
+        self.dimension
     }
 
     /// Загружает BERT модель в память.

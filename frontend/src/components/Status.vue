@@ -30,7 +30,7 @@
 
       // Сообщение от сервиса
       n-tag(
-        v-if="currentStatus?.message"
+        v-if="currentStatus?.message && currentStatus.status !== 'Generation'"
         type="info"
         :bordered="false"
         size="small"
@@ -81,7 +81,7 @@ import {
   CheckmarkCircleOutline,
   ChevronDownCircleOutline
 } from '@vicons/ionicons5'
-import { http_sevice } from '@/services/http_service/http_service'
+import { http_service } from '@/services/http_service/http_service'
 import { Emitter } from 'strict-event-emitter'
 import { type Events } from '@/services/emitter'
 import { type ServiceStatus } from '@/types/service_status'
@@ -169,9 +169,9 @@ let timeUpdateInterval: number | null = null
 // Получение типа тега для статуса
 const getStatusType = (status: string): 'default' | 'success' | 'warning' | 'error' | 'info' => {
   const typeMap: Record<string, 'default' | 'success' | 'warning' | 'error' | 'info'> = {
-    'Embedding': 'warning',
+    'Embedding': 'info',
     'Reranking': 'info',
-    'Generation': 'success',
+    'Generation': 'warning',
     'Chunking': 'info',
     'Message': 'default',
     'Error': 'error'
@@ -210,7 +210,7 @@ const getStatusIcon = (status: string) => {
 // Проверка статуса API (для проверки подключения)
 const checkApiStatus = async () => {
   try {
-    const result = await http_sevice.documents_service.health_check()
+    const result = await http_service.documents_service.health_check()
     apiStatus.value.connected = result !== undefined
     apiStatus.value.lastCheck = Date.now()
   } catch (error) {

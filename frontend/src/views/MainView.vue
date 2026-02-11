@@ -3,6 +3,8 @@ model-state
 n-tabs.tabs(type="line" animated )
     n-tab-pane(name="documents" tab="Документы")
         documents-list
+    n-tab-pane(name="collections" tab="Коллекции")
+        collections
     n-tab-pane(name="queries" tab="Запросы")
 
 status
@@ -14,13 +16,14 @@ import { type Events, type Emitter } from '../services/emitter';
 import { NTabs, NTabPane } from 'naive-ui';
 import ModelState from '@/components/ModelState.vue';
 import DocumentsList from '@/components/DocumentsList.vue';
+import Collections from '@/components/Collections.vue';
 import Status from '@/components/Status.vue';
-import { http_sevice } from '@/services/http_service/http_service';
+import { http_service } from '@/services/http_service/http_service';
 </script>
 <script lang="ts" setup>
 const emitter = inject<Emitter<Events>>('emitter') as Emitter<Events>;
 onMounted(async () => {
-    await http_sevice.model_state_service.get_state()
+    await http_service.model_state_service.get_state()
 })
 </script>
     

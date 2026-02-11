@@ -1,8 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
-use database::{DocumentDbo, DocumentsTable};
+use database::{CollectionsTable, DocumentDbo, DocumentsTable};
 use rag_core::DocumentStatus;
-use rag_service::{Document};
+use rag_service::{Collection, Document};
 use tracing::error;
 use utilites::Date;
 
@@ -10,7 +10,8 @@ use crate::{Error};
 
 pub struct DatabaseService
 {
-    pub database: DocumentsTable,
+    documents: DocumentsTable,
+    collections: CollectionsTable
 }
 
 
@@ -18,10 +19,13 @@ impl DatabaseService
 {
     pub async fn new() -> Result<Self, Error>
     {
-        let service = DocumentsTable::new_default().await?;
+        let db_name = "documents";
+        let documents = DocumentsTable::new_default(db_name).await?;
+        let collections = CollectionsTable::new_default(db_name).await?;
         Ok(Self 
         { 
-            database: service
+            documents,
+            collections
         })
     }
     ///добавляем док только если получены чанки
@@ -29,15 +33,15 @@ impl DatabaseService
     {
         if let Some(first_chunk) = document.chunks.first()
         {
-            let _ = self.database.create_document(
+            let _ = self.documents.create_document(
                 &document.document_uri,
                 &first_chunk.hash,
                 &first_chunk.title,
                 &document.document_number,
                 &document.document_sign_date,
                 DocumentStatus::Loaded,
-                false,
                 &(document.chunks.len() as u32),
+                document.collection_id,
                 document.chunks.as_slice()
             ).await.inspect_err(|e| error!("{}", e))?;
             Ok(())
@@ -49,26 +53,70 @@ impl DatabaseService
     }
     pub async fn get_documents_cards(&self, offset: u32, limit: u32) -> Result<Vec<Document>, Error>
     {
-        let docs = self.database.get_documents_paginated(limit, offset).await.inspect_err(|e| error!("{}", e))?;
+        let docs = self.documents.get_documents_paginated(limit, offset).await.inspect_err(|e| error!("{}", e))?;
         Ok(docs.into_iter().map(|d| d.into()).collect())
     }
     pub async fn get_document(&self, hash: &str) -> Result<Document, Error>
     {
-        let doc = self.database.get_document_by_hash(hash).await
+        let doc = self.documents.get_document_by_hash(hash).await
             .inspect_err(|e| error!("{}", e))?;
         Ok(doc.into())
     }
 
     pub async fn set_is_embedded(&self, doc_hash: &str) -> Result<(), Error>
     {
-       let _ = self.database.update_status(DocumentStatus::Embedded, doc_hash).await
+       let _ = self.documents.update_status(DocumentStatus::Embedded, doc_hash).await
         .inspect_err(|e| error!("{e}"))?;
        Ok(())
     }
-    pub async fn delete(&self, doc_hash: &str) -> Result<(), Error>
+    pub async fn delete_document(&self, doc_hash: &str) -> Result<(), Error>
     {
-       let _ = self.database.delete_document(doc_hash).await
+       let _ = self.documents.delete_document(doc_hash).await
         .inspect_err(|e| error!("{e}"))?;
        Ok(())
+    }
+    pub async fn get_documents_count(&self) -> Result<usize, Error>
+    {
+        let count = self.documents.get_documents_count().await
+            .inspect_err(|e| error!("{}", e))?;
+        Ok(count)
+    }
+    pub async fn get_collections(&self) -> Result<Vec<Collection>, Error>
+    {
+        let collections = self.collections.get_collections().await
+            .inspect_err(|e| error!("{}", e))?;
+        Ok(collections.into_iter().map(|c| c.into()).collect())
+    }
+    pub async fn get_collection_by_name(&self, name: &str) -> Result<Collection, Error>
+    {
+        let collection = self.collections.get_collection_by_name(name).await
+            .inspect_err(|e| error!("{}", e))?;
+        Ok(collection.into())
+    }
+
+    pub async fn update_collection(&self, id: uuid::Uuid, description: &str, keywords: Vec<String>) -> Result<(), Error>
+    {
+        let _ = self.collections.update(description, keywords, id).await
+            .inspect_err(|e| error!("{}", e))?;
+        Ok(())
+    }
+
+    pub async fn delete_collection(&self, id: uuid::Uuid) -> Result<(), Error>
+    {
+        let _ = self.collections.delete_collection(id).await
+            .inspect_err(|e| error!("{}", e))?;
+        Ok(())
+    }
+    pub async fn get_collection_by_id(&self, id: uuid::Uuid) -> Result<Collection, Error>
+    {
+        let collection = self.collections.get_collection_by_id(id).await
+            .inspect_err(|e| error!("{}", e))?;
+        Ok(collection.into())
+    }
+    pub async fn add_collection(&self, name: &str, description: &str, keywords: Vec<String>) -> Result<Collection, Error>
+    {
+        let collection = self.collections.create_collection(name, description, keywords).await
+            .inspect_err(|e| error!("{}", e))?;
+        Ok(collection.into())
     }
 }

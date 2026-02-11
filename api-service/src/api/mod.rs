@@ -15,6 +15,14 @@ pub struct DocumentRequest
 {
     sign_date: Date,
     number: String,
+    collection_id: Uuid
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EmbeddingRequest
+{
+    hash: String,
+    collection_id: Uuid
 }
 #[derive(Debug, Deserialize)]
 pub struct GenerationRequest
@@ -23,45 +31,19 @@ pub struct GenerationRequest
     limit: usize,
     reranker_limit: usize
 }
-
-
 #[derive(Debug, Deserialize)]
-pub struct CountRequest
+pub struct CollectionAddRequest
 {
-    date: String
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CheckRequest
-{
-    document_id: u32,
-    checked: bool
-}
-
-#[derive(Debug, Deserialize)]
-pub struct StringRequest
-{
-    payload: String
-}
-
-
-#[derive(Debug, Deserialize)]
-pub struct CopyFilesPayload
-{
-    packet_id: String,
-    files: Vec<String>
+    name: String,
+    description: String,
+    keywords: Vec<String>
 }
 #[derive(Debug, Deserialize)]
-pub struct PdfPagesPayload
-{
-    doc_id: u32,
-    pages: Vec<u32>
-}
-
-#[derive(Debug, Deserialize)]
-pub struct IdPayload
+pub struct CollectionUpdateRequest
 {
     id: Uuid,
+    description: String,
+    keywords: Vec<String>
 }
 
 pub fn combine_path(path: &'static str) -> String

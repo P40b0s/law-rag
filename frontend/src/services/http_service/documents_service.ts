@@ -3,15 +3,23 @@ import { get, post, HTTPError } from './http_client';
 import { notify_service } from '../notification_service';
 import { Document, DocumentArraySchema, DocumentSchema } from '@/types/document';
 import { DateFormat, DateTime } from '../date';
+import { Collection } from '@/types/collection';
 
 // Типы запросов
-interface DocumentRequest 
+interface DocumentRequest
 {
     sign_date: string;
     number: string;
+    collection_id: string;
 }
 
-interface GenerationRequest 
+interface EmbeddingRequest
+{
+    hash: string;
+    collection_id: string;
+}
+
+interface GenerationRequest
 {
     query: string;
     limit: number;
@@ -21,14 +29,15 @@ interface GenerationRequest
 class DocumentsService 
 {
     /**
-     * Запрос документа по дате подписания и номеру
+     * Запрос документа по дате подписания, номеру и коллекции
      */
-    async request_document(sign_date: DateTime, number: string): Promise<Document | undefined> 
+    async request_document(sign_date: DateTime, number: string, collection_id: string): Promise<Document | undefined>
     {
-        const payload: DocumentRequest = 
+        const payload: DocumentRequest =
         {
             sign_date: sign_date.to_string(DateFormat.SerializedDate),
-            number
+            number,
+            collection_id
         };
 
         const result: Result<Document, HTTPError> = await post(
@@ -38,7 +47,7 @@ class DocumentsService
             DocumentSchema
         );
 
-        if (result.isErr()) 
+        if (result.isErr())
         {
             //notify_service.error("Ошибка запроса документа", result.unwrapErr().message);
             return undefined;
@@ -67,13 +76,23 @@ class DocumentsService
     }
 
     /**
-     * Создание эмбеддингов для документа по его хешу
+     * Создание эмбеддингов для документа по его хешу и коллекции
      */
-    async embedding_document(hash: string): Promise<boolean> 
+    async embedding_document(hash: string, collection_id: string): Promise<boolean>
     {
-        const result: Result<void, HTTPError> = await get(`documents/embedding_document/${hash}`);
+        const payload: EmbeddingRequest =
+        {
+            hash,
+            collection_id
+        };
 
-        if (result.isErr()) 
+        const result: Result<void, HTTPError> = await post(
+            'documents/embedding_document',
+            'POST',
+            payload
+        );
+
+        if (result.isErr())
         {
             //notify_service.error("Ошибка создания эмбеддингов", result.unwrapErr().message);
             return false;
@@ -84,7 +103,7 @@ class DocumentsService
     }
 
     /**
-     * Генерация ответа на основе поискового запроса
+     * Генерация ответа на основе поискового запроса с указанием коллекций
      */
     async generation_request(query: string, limit: number = 10, reranker_limit: number = 5): Promise<boolean> {
         const payload: GenerationRequest =
@@ -139,6 +158,19 @@ class DocumentsService
         if (result.isErr()) 
         {
             //notify_service.error("Ошибка запроса документа", result.unwrapErr().message);
+            return undefined;
+        }
+
+        return result.unwrap();
+    }
+    async get_documents_count(): Promise<number | undefined>
+    {
+        const result: Result<number, HTTPError> = await get(
+            'documents/count',
+        );
+
+        if (result.isErr()) 
+        {
             return undefined;
         }
 

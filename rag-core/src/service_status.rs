@@ -75,6 +75,17 @@ impl ServiceStatus
             status: ProcessStatus::Message
         }
     }
+    pub fn process_generation(msg: String) -> Self
+    {
+        Self 
+        { 
+            hash: String::new(),
+            current_chunk: None,
+            overall_chunks: None,
+            message: msg,
+            status: ProcessStatus::Generation
+        }
+    }
     pub fn complete(hash: &str) -> Self
     {
         Self 

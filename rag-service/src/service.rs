@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Deref, sync::{Arc, atomic::AtomicBool}};
+use std::{collections::{self, HashMap}, fmt::Display, ops::Deref, sync::{Arc, atomic::AtomicBool}};
 use anyhow::Context;
 use database::{QdrantConfig, QdrantManager, SearchResult};
 use embedding::{BgeReranker, EmbeddingConfiguration, Generator, Model, ModelPrompt, RerankResult, RetriverModel};
@@ -8,7 +8,7 @@ use tokio::sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender}};
 use tracing::{debug, error, info, warn};
 use utilites::Date;
 
-use crate::{Error};
+use crate::{Collection, Error};
 
 #[derive(Debug, Serialize)]
 pub struct ModelsState
@@ -22,9 +22,9 @@ pub struct Service
 {
     embedding_config: Arc<EmbeddingConfiguration>,
     retriver: RwLock<RetriverModel>,
+    retriver_dimension: usize,
     reranker: RwLock<BgeReranker>,
     generator: RwLock<Generator>,
-    qdrant_initialized: AtomicBool
 
 }
 
@@ -38,6 +38,7 @@ impl Service
         let retriver = RetriverModel::new(Arc::clone(&emb_cfg)).await
             .inspect_err(|e| error!("Error when loading retriver model `{}`", e))
             .map_err(|e| Error::ModelLoadError { model: "retriver".to_owned(), source: e })?;
+        let retriver_dimension = retriver.dimension();
         let reranker = BgeReranker::new(Arc::clone(&emb_cfg)).await
             .inspect_err(|e| error!("Error when loading reranker model `{}`", e))
             .map_err(|e| Error::ModelLoadError { model: "reranker".to_owned(), source: e })?;
@@ -47,7 +48,7 @@ impl Service
             retriver: RwLock::new(retriver),
             reranker: RwLock::new(reranker),
             generator: RwLock::new(generator),
-            qdrant_initialized: AtomicBool::new(false)
+            retriver_dimension
         };
        Ok(slf)
     }
@@ -99,50 +100,43 @@ impl Service
             Ok(state)
         }
     }
-    fn qdrant_config(&self) -> QdrantConfig
+    fn qdrant_config(&self, collection_name: &str) -> QdrantConfig
     {
         QdrantConfig
         {
             url: "http://localhost:6334".to_owned(),
-            collection_name: "law_collection".to_owned(),
+            collection_name: collection_name.to_owned(),
             distance: database::Distance::Cosine
         }
     }
-
-    pub async fn init_qdrant(&self) -> Result<(), Error>
+    ///create collection if not exists
+    pub async fn create_collection(&self, collection_name: &str) -> Result<(), Error>
     {
-        if self.qdrant_initialized.load(std::sync::atomic::Ordering::Relaxed)
-        {
-            return Ok(());
-        }
-        let cfg = self.qdrant_config();
-        let _ = self.check_load_embedding_models().await?;
-        let reranker = self.reranker.read().await;
+        let cfg = self.qdrant_config(collection_name);
         let retriver = self.retriver.read().await;
-        let qm = QdrantManager::new(cfg, &retriver, &reranker).await?;
+        let qm = QdrantManager::new(cfg, retriver.dimension())?;
         qm.ensure_collection().await?;
         Ok(())
     }
     //tokio spawn inside, may be long operation
     //progress messages and errors sends via sender
-    pub async fn add_chunks_to_qdrant(self: Arc<Self>, chunks: Vec<Chunk>) -> Result<UnboundedReceiver<ServiceStatus>, Error>
+    pub async fn add_chunks_to_qdrant(self: Arc<Self>, chunks: Vec<Chunk>, collection_name: &str) -> Result<UnboundedReceiver<ServiceStatus>, Error>
     {
-        let cfg = self.qdrant_config();
+        let cfg = self.qdrant_config(collection_name);
         let drop_service = self;
         let service = Arc::clone(&drop_service);
         let _ = service.check_load_embedding_models().await?;
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move 
             {
-                let reranker = service.reranker.read().await;
                 let retriver = service.retriver.read().await;
-                
-                let qm = QdrantManager::new(cfg, &retriver, &reranker).await
+                let dimension = retriver.dimension();
+                let qm = QdrantManager::new(cfg, dimension)
                     .inspect_err(|e| error!("Error creating QdrantManager: {}", e));
                 if let Ok(qm) = qm
                 {
                     //auto send error to client
-                    let _added = qm.add_chunks_to_qdrant(chunks, sender).await;
+                    let _added = qm.add_chunks_to_qdrant(chunks, &retriver, sender).await;
                 }
                 else
                 {
@@ -169,41 +163,166 @@ impl Service
         Ok(())
     }
     ///может потратить много времени на реранкинг, пока не буду канал выводить для статуса
-    pub async fn search(&self, query: &str, limit: usize, reranker_limit: usize) -> Result<Vec<RerankResult<SearchResult>>, Error>
+    pub async fn search(&self, query: &str, limit: usize, reranker_limit: usize, collection_name: &str) -> Result<Vec<RerankResult<SearchResult>>, Error>
     {
-        let cfg = self.qdrant_config();
+        let cfg = self.qdrant_config(collection_name);
         let _ = self.check_load_embedding_models().await?;
         let reranker = self.reranker.read().await;
         let retriver = self.retriver.read().await;
-        let qm = QdrantManager::new(cfg, &retriver, &reranker).await
+        let qm = QdrantManager::new(cfg, retriver.dimension())
             .inspect_err(|e| error!("Error creating QdrantManager: {}", e))?;
-        let result = qm.semantic_search(&query, limit, reranker_limit, None).await?;
+        let result = qm.semantic_search(&query, limit, reranker_limit, &retriver, &reranker, None).await?;
         Ok(result)
-        
-       
-       
-        // let result = tokio::spawn(async move 
-        //     {
-        //         let reranker = service.reranker.read().await;
-        //         let retriver = service.retriver.read().await;
-        //         let ret = retriver.as_ref().unwrap();
-        //         let rer = reranker.as_ref().unwrap();
-        //         let qm = QdrantManager::new(cfg, ret, rer).await
-        //             .inspect_err(|e| error!("Error creating QdrantManager: {}", e));
-        //         if let Ok(qm) = qm
-        //         {
-        //             let result = qm.semantic_search(&query, limit, reranker_limit, None).await?;
-        //             Ok(result)
-        //         }
-        //         else
-        //         {
-        //             Err(qm.err().unwrap())
-        //         } 
-        //     }
-        // );
-        // let result = result.await?
-        //     .map_err(|e| Error::DatabaseError(e));
-        // result
+    }
+
+    /// Поиск по нескольким коллекциям с общим reranker_limit
+    ///
+    /// Собирает результаты из всех указанных коллекций, сортирует по score
+    /// и возвращает топ reranker_limit результатов по всем коллекциям
+    pub async fn search_multiple_collections(
+        &self,
+        query: &str,
+        limit: usize,
+        reranker_limit: usize,
+        collection_names: &[&str]
+    ) -> Result<Vec<RerankResult<SearchResult>>, Error>
+    {
+        if collection_names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let _ = self.check_load_embedding_models().await?;
+        let reranker = self.reranker.read().await;
+        let retriver = self.retriver.read().await;
+
+        let mut all_results = Vec::new();
+
+        for collection_name in collection_names 
+        {
+            let cfg = self.qdrant_config(collection_name);
+            let qm = QdrantManager::new(cfg, retriver.dimension())
+                .inspect_err(|e| error!("Error creating QdrantManager for collection {}: {}", collection_name, e))?;
+
+            // Для каждой коллекции используем limit, но не ограничиваем reranker_limit
+            // т.к. финальный лимит будет применен после объединения всех результатов
+            match qm.semantic_search(&query, limit, limit, &retriver, &reranker, None).await 
+            {
+                Ok(mut results) => 
+                {
+                    info!("Found {} results in collection {}", results.len(), collection_name);
+                    all_results.append(&mut results);
+                },
+                Err(e) => 
+                {
+                    warn!("Error searching in collection {}: {}", collection_name, e);
+                    // Продолжаем поиск в других коллекциях даже если одна из них вернула ошибку
+                }
+            }
+        }
+
+        // Сортируем все результаты по score в порядке убывания (большие score первыми)
+        all_results.sort_by(|a, b| 
+        {
+            b.score.partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Берем только топ reranker_limit результатов
+        all_results.truncate(reranker_limit);
+
+        info!("Returning {} top results from {} collections", all_results.len(), collection_names.len());
+        Ok(all_results)
+    }
+
+    /// Ранжирует коллекции по релевантности к запросу пользователя
+    ///
+    /// Использует reranker для оценки семантической близости описаний коллекций
+    /// к запросу пользователя и возвращает отсортированный список коллекций.
+    ///
+    /// # Аргументы
+    /// * `query` - Запрос пользователя
+    /// * `collections` - Список коллекций для ранжирования
+    /// * `min_score` - Минимальный порог релевантности (0.0 - 1.0). Коллекции с меньшим score будут отфильтрованы
+    ///
+    /// # Возвращает
+    /// Вектор коллекций, отсортированных по релевантности (от большего к меньшему)
+    ///
+    /// # Пример
+    /// ```ignore
+    /// let relevant_collections = service.rank_collections_by_relevance(
+    ///     "законы о туризме",
+    ///     collections,
+    ///     0.3  // Порог релевантности 30%
+    /// ).await?;
+    /// ```
+    pub async fn rank_collections_by_relevance(
+        &self,
+        query: &str,
+        collections: Vec<Collection>,
+        min_score: f32
+    ) -> Result<Vec<RerankResult<Collection>>, Error>
+    {
+        if collections.is_empty() 
+        {
+            return Ok(Vec::new());
+        }
+
+        // Проверяем, что reranker загружен
+        let reranker = self.reranker.read().await;
+        if !reranker.model_is_loaded() 
+        {
+            return Err(Error::RerankerModelNotLoad);
+        }
+
+        info!("Ranking {} collections for query: {}", collections.len(), query);
+
+        // Создаем описания коллекций для reranker
+        // Включаем название, описание и ключевые слова для более точной оценки релевантности
+        let descriptions: Vec<String> = collections
+            .iter()
+            .map(|c| {
+                let keywords_str = c.keywords.join(", ");
+                format!("{}: {}. Ключевые слова: {}", c.name, c.description, keywords_str)
+            })
+            .collect();
+
+        // Используем rerank для оценки релевантности
+        // top_k = collections.len() чтобы получить все результаты
+        let ranked_results = reranker.rerank(query, descriptions, collections.len()).await
+            .map_err(|e| Error::ModelError { source: e })?;
+
+        // Преобразуем результаты обратно в Collection с сохранением score
+        let mut results_with_collections: Vec<RerankResult<Collection>> = Vec::new();
+        for (idx, result) in ranked_results.iter().enumerate() 
+        {
+            if result.score >= min_score 
+            {
+                results_with_collections.push(RerankResult 
+                {
+                    score: result.score,
+                    db_object: collections[idx].clone(),
+                });
+            }
+        }
+
+        info!(
+            "Found {} relevant collections (min_score: {:.2})",
+            results_with_collections.len(),
+            min_score
+        );
+
+        // Логируем топ-3 результата для отладки
+        for (i, result) in results_with_collections.iter().take(3).enumerate() 
+        {
+            info!(
+                "  #{}: {} (score: {:.3})",
+                i + 1,
+                result.db_object.name,
+                result.score
+            );
+        }
+
+        Ok(results_with_collections)
     }
 
     pub async fn load_embedding_models(&self) -> Result<ModelsState, Error>
@@ -216,8 +335,6 @@ impl Service
             let _ = lock_reranker.load_model().await
                 .map_err(|e| Error::ModelLoadError { model: "reranker".to_owned(), source: e })?;
         }
-        let _ = self.init_qdrant().await
-            .inspect_err(|e| error!("Qdrant initialize error: {}", e))?;
         let state = self.models_state().await;
         Ok(state)
     }
@@ -245,18 +362,15 @@ impl Service
     {
         let _generator = self.load_generator_model().await?;
         let last_state = self.load_embedding_models().await?;
-        let _ = self.init_qdrant().await?;
         Ok(last_state)
     }
 
-    pub async fn delete_document_from_qdrant(&self, hash: &str) -> Result<(), Error>
+    pub async fn delete_document_from_qdrant(&self, hash: &str, collection_name: &str) -> Result<(), Error>
     {
-        let _ = self.check_load_embedding_models().await?;
-        let reranker = self.reranker.read().await;
-        let retriver = self.retriver.read().await;
-        let qm = QdrantManager::new(self.qdrant_config(), &retriver, &reranker).await
+        let qm = QdrantManager::new(self.qdrant_config(collection_name), self.retriver_dimension)
             .inspect_err(|e| error!("Error creating QdrantManager: {}", e))?;
-        let _ = qm.delete_document(hash).await?;
+        let status = qm.delete_document(hash).await?;
+        info!("Document with hash {} deleted from Qdrant, status: {:?}", hash, status);
         Ok(())
     }
 
@@ -342,9 +456,9 @@ mod tests
         let emb_cfg = Arc::new(EmbeddingConfiguration::default());
         let service = Arc::new(super::Service::new(emb_cfg).await.unwrap());
         service.load_embedding_models().await.unwrap();
-        service.init_qdrant().await.unwrap();
+        service.create_collection("law_collection").await.unwrap();
         let query = "Как взыскивается задолженность с налогоплательщика?";
-        let context = service.search(query, 5, 5).await.unwrap();
+        let context = service.search(query, 5, 5, "law_collection").await.unwrap();
         service.unload_embedding_models().await.unwrap();
         service.load_generator_model().await.unwrap();
         let mut receiver = service.genereate_response(query, context).await.unwrap();
@@ -354,4 +468,5 @@ mod tests
             info!("{:?}", output);
         }
     }
+    //
 }

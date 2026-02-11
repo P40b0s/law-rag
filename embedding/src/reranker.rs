@@ -84,6 +84,10 @@ impl Model<XLMRobertaForSequenceClassification, Config> for BgeReranker
     {
         self.model.is_some()
     }
+    fn dimension(&self) -> usize 
+    {
+        1 // Реранкеры обычно возвращают один скор релевантности на пару (query, document)
+    }
 
     async fn load_model(&mut self) -> Result<()>
     {
@@ -237,6 +241,7 @@ impl BgeReranker
         // Возврат топ-K результатов
         Ok(reranked.into_iter().take(top_k).collect())
     }
+    
     /// Вычисляет скоры релевантности для батча пар (query, document).
     ///
     /// # Процесс вычисления:

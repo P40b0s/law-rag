@@ -1,7 +1,21 @@
 <template lang="pug">
 .documents-list
-  document-add-form(@document-added="handleDocumentAdded")
-
+  n-modal(
+    v-model:show="show_add_modal" 
+    title="Добавление документа"
+    :mask-closable="true"
+     preset="card"
+     :style="{ maxWidth: '600px' }"
+     closable)
+    document-add-form(@document-added="handleDocumentAdded")
+  n-button(
+    type="primary"
+    @click="show_add_modal = true"
+    style="margin-bottom: 16px"
+  )
+    template(#icon)
+      n-icon(:component="AddOutline")
+    | Добавить документ
   n-card(title="Список документов" :bordered="false")
     template(#header-extra)
       n-space(align="center")
@@ -32,6 +46,14 @@
           v-model:value="statusFilter"
           :options="statusOptions"
           placeholder="Фильтр по статусу"
+          clearable
+          style="width: 200px"
+        )
+
+        n-select(
+          v-model:value="collectionFilter"
+          :options="collectionOptions"
+          placeholder="Фильтр по коллекции"
           clearable
           style="width: 200px"
         )
@@ -70,8 +92,10 @@ import {
   NEmpty,
   NTag,
   NPopconfirm,
+  NModal,
   type DataTableColumns,
-  type PaginationProps
+  type PaginationProps,
+  NTooltip
 } from 'naive-ui'
 import {
   SearchOutline,
@@ -83,9 +107,10 @@ import {
   CloseCircleOutline,
   TimeOutline,
   CloudDoneOutline,
-  HelpCircleOutline
+  HelpCircleOutline,
+  AddOutline
 } from '@vicons/ionicons5'
-import { http_sevice } from '@/services/http_service/http_service'
+import { http_service } from '@/services/http_service/http_service'
 import { notify_service } from '@/services/notification_service'
 import type { Document, DocumentStatus } from '@/types/document'
 import { type ServiceStatus } from '@/types/service_status'
@@ -94,17 +119,23 @@ import { type Emitter } from 'strict-event-emitter'
 import { type Events } from '@/services/emitter'
 import DocumentAddForm from './DocumentAddForm.vue'
 import useModelState from '@/composables/useModelState'
+import useCollections from '@/composables/useCollections'
+import useEmbeddings from '@/composables/useEmbeddings'
 
 const emitter = inject<Emitter<Events>>('emitter') as Emitter<Events>;
+const { getCollectionName, collectionOptions, getCollectionById} = useCollections()
 // Reactive state
 const documents = ref<Document[]>([])
 const isLoading = ref(false)
 const searchQuery = ref('')
 const statusFilter = ref<DocumentStatus | null>(null)
+const collectionFilter = ref<string | null>(null)
 const currentPage = ref(1)
 const pageSize = ref(20)
 const totalDocuments = ref(0)
+const show_add_modal = ref(false);
 const {get_state} = useModelState()
+const {embedding_document} = useEmbeddings();
 //TODO не обновляется статус после окончания ембеддинга
 // Опции для фильтра статуса
 const statusOptions = [
@@ -150,6 +181,11 @@ const filteredDocuments = computed(() => {
     result = result.filter(doc => doc.status === statusFilter.value)
   }
 
+  // Фильтр по коллекции
+  if (collectionFilter.value) {
+    result = result.filter(doc => doc.collection_id === collectionFilter.value)
+  }
+
   return result
 })
 
@@ -165,7 +201,7 @@ const getStatusLabel = (status: DocumentStatus): string => {
   const statusMap: Record<DocumentStatus, string> = {
     'NotLoaded': 'Не загружен',
     'Loaded': 'Загружен',
-    'Embedded': 'Эмбеддинги созданы',
+    'Embedded': 'В поисковом индексе',
     'Unknown': 'Неизвестно'
   }
   return statusMap[status] || 'Неизвестно'
@@ -194,16 +230,16 @@ const getStatusIcon = (status: DocumentStatus) => {
 }
 
 // Обработчик создания эмбеддингов
-const handleEmbedding = async (document: Document) => 
+const handleEmbedding = async (document: Document) =>
 {
-  if (document.has_embeddings) 
+  if (document.has_embeddings)
   {
     notify_service.info('Эмбеддинги уже созданы', `Для документа ${document.document_number} эмбеддинги уже существуют`)
     return
   }
   //TODO результат приходит сразу, нужно отслеживать статус документа и обновлять его в списке
-  const success = await http_sevice.documents_service.embedding_document(document.document_hash)
-  if (success) 
+  const success = await embedding_document(document.document_hash, document.collection_id)
+  if (success)
   {
     notify_service.info("Процесс эмбеддинга запущен");
   }
@@ -211,7 +247,7 @@ const handleEmbedding = async (document: Document) =>
 
 // Обработчик удаления документа
 const handleDelete = async (document: Document) => {
-  const success = await http_sevice.documents_service.delete_document(document.document_hash)
+  const success = await http_service.documents_service.delete_document(document.document_hash)
   if (success) 
   {
     // Удаляем документ из списка
@@ -225,21 +261,28 @@ const handleDelete = async (document: Document) => {
 }
 
 // Загрузка документов
-const loadDocuments = async () => {
+const loadDocuments = async () => 
+{
   isLoading.value = true
-  try {
+  try 
+  {
     const offset = (currentPage.value - 1) * pageSize.value
-    const result = await http_sevice.documents_service.get_documents(offset, pageSize.value)
-
-    if (result) {
+    const result = await http_service.documents_service.get_documents(offset, pageSize.value)
+    const count = await http_service.documents_service.get_documents_count();
+    console.log('Documents count:', count);
+    if (result) 
+    {
       documents.value = result
-      // TODO: Получать реальное количество документов из API
-      totalDocuments.value = result.length
+      totalDocuments.value = count || 0
     }
-  } catch (error) {
+  } 
+  catch (error) 
+  {
     console.error('Error loading documents:', error)
     notify_service.error('Ошибка загрузки', 'Не удалось загрузить список документов')
-  } finally {
+  } 
+  finally 
+  {
     isLoading.value = false
   }
 }
@@ -259,6 +302,31 @@ const columns = computed<DataTableColumns<Document>>(() => [
     key: 'document_title',
     ellipsis: {
       tooltip: true
+    }
+  },
+  {
+    title: 'Коллекция',
+    key: 'collection_id',
+    width: 180,
+    render: (row) => {
+      return h(
+        NTooltip,
+        {
+         
+        },
+        {
+          trigger: () => h( 
+            NTag,
+            {
+              type: 'info',
+              bordered: false,
+              size: 'small'
+            },
+            { default: () => getCollectionName(row.collection_id) }
+          ),
+          default: () =>  getCollectionById(row.collection_id)?.description || 'Нет описания'
+        }
+      )
     }
   },
   {
@@ -352,12 +420,15 @@ const handleDocumentAdded = (document: Document) =>
     // Обновляем существующий документ
     documents.value[existingIndex] = document
     notify_service.info('Документ обновлен', 'Документ уже существовал в списке и был обновлен')
-  } else {
+  } 
+  else 
+  {
     // Добавляем новый документ в начало списка
     documents.value.unshift(document)
     totalDocuments.value++
     notify_service.success('Документ добавлен', 'Новый документ добавлен в список')
   }
+  show_add_modal.value = false;
 }
 
 // Загрузка документов при монтировании компонента

@@ -31,11 +31,11 @@ mod tests
             collection_name: "law_collection".to_owned(),
             distance: database::Distance::Cosine
         };
-        let qdrant = database::QdrantManager::new(qconfig, &retriver, &reranker_client).await.unwrap();
+        let qdrant = database::QdrantManager::new(qconfig, retriver.dimension()).unwrap();
         // Пример поиска похожих документов
         let query = "Как взыскивается задолженность с налогоплательщика?";
         //let emb = emb_client.generate_embeddings(&[texts]).await.unwrap();
-        let similar = qdrant.semantic_search(query, 5, 5, None).await.unwrap();
+        let similar = qdrant.semantic_search(query, 5, 5, &retriver, &reranker_client, None).await.unwrap();
         let _ = retriver.unload_model();
         let _ = reranker_client.unload_model();
         info!("Топ-5 похожих чанков:");

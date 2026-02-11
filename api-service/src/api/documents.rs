@@ -5,7 +5,7 @@ use serde::Serialize;
 use tokio::{fs::create_dir_all, io::AsyncWriteExt};
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use uuid::Uuid;
-use crate::{Error, api::{DocumentRequest, GenerationRequest, IdPayload}, state::AppState};
+use crate::{Error, api::{CollectionAddRequest, CollectionUpdateRequest, DocumentRequest, EmbeddingRequest, GenerationRequest}, state::AppState};
 use super::layers::{cors_layer};
 
 
@@ -33,11 +33,11 @@ pub fn documents_router(app_state: Arc<AppState>) -> Router
         .route(&super::with_api_version(super::ApiVersion::V1,"/documents/request_document"), 
         post(request_document))
 
-    .route(&super::with_api_version(super::ApiVersion::V1,"/documents/{offset}"), 
+        .route(&super::with_api_version(super::ApiVersion::V1,"/documents/{offset}"), 
         get(get_documents))
 
-        .route(&super::with_api_version(super::ApiVersion::V1,"/documents/embedding_document/{hash}"), 
-        get(embedding_document))
+        .route(&super::with_api_version(super::ApiVersion::V1,"/documents/embedding_document"), 
+        post(embedding_document))
 
         .route(&super::with_api_version(super::ApiVersion::V1,"/health_check"), 
         get(health_check))
@@ -45,8 +45,23 @@ pub fn documents_router(app_state: Arc<AppState>) -> Router
         .route(&super::with_api_version(super::ApiVersion::V1,"/documents/generation_request"), 
         post(generation_request))
 
+        .route(&super::with_api_version(super::ApiVersion::V1,"/documents/count"), 
+        get(documents_count))
+
         .route(&super::with_api_version(super::ApiVersion::V1,"/documents/delete_document/{hash}"), 
         get(delete_document))
+
+        .route(&super::with_api_version(super::ApiVersion::V1,"/collections"), 
+        get(get_collections))
+
+        .route(&super::with_api_version(super::ApiVersion::V1,"/collections/add"), 
+        post(add_collection))
+
+        .route(&super::with_api_version(super::ApiVersion::V1,"/collections/delete/{id}"), 
+        get(delete_collection))
+
+         .route(&super::with_api_version(super::ApiVersion::V1,"/collections/update"), 
+        post(update_collection))
     
         .with_state(app_state.clone())
         .layer(cors_layer(app_state))
@@ -66,6 +81,7 @@ pub async fn load_generation_model(
         Json(models_state),
     ).into_response())
 }
+
 pub async fn delete_document(
     ConnectInfo(_): ConnectInfo<SocketAddr>,
     State(app_state): State<Arc<AppState>>,
@@ -73,11 +89,25 @@ pub async fn delete_document(
 -> Result<Response<Body>, Error>
 {
     let service = app_state.get_services();
-    let models_state = service.documents_service.delete_document(&hash).await?;
+    let _ = service.documents_service.delete_document(&hash).await?;
     Ok((
         StatusCode::OK,
     ).into_response())
 }
+
+pub async fn documents_count(
+    ConnectInfo(_): ConnectInfo<SocketAddr>,
+    State(app_state): State<Arc<AppState>>,)
+-> Result<Response<Body>, Error>
+{
+    let service = app_state.get_services();
+    let count = service.database_service.get_documents_count().await?;
+    Ok((
+        StatusCode::OK,
+        Json(count),
+    ).into_response())
+}
+
 pub async fn unload_generation_model(
     ConnectInfo(_): ConnectInfo<SocketAddr>,
     State(app_state): State<Arc<AppState>>,)
@@ -137,7 +167,7 @@ pub async fn request_document(
 -> Result<Response<Body>, Error>
 {
     let service = app_state.get_services();
-    let doc = service.documents_service.get_document_and_add_to_db(req.sign_date, &req.number).await?;
+    let doc = service.documents_service.get_document_and_add_to_db(req.sign_date, &req.number, req.collection_id).await?;
     Ok((
         StatusCode::OK,
         Json(doc),
@@ -145,7 +175,7 @@ pub async fn request_document(
 }
 pub async fn health_check(
     ConnectInfo(_): ConnectInfo<SocketAddr>,
-    State(app_state): State<Arc<AppState>>,)
+    State(_): State<Arc<AppState>>,)
 -> Result<Response<Body>, Error>
 {
     Ok((
@@ -169,11 +199,11 @@ pub async fn get_documents(
 pub async fn embedding_document(
     ConnectInfo(_): ConnectInfo<SocketAddr>,
     State(app_state): State<Arc<AppState>>,
-    Path(hash): Path<String>)
+     Json(req): Json<EmbeddingRequest>)
 -> Result<Response<Body>, Error>
 {
     let service = app_state.get_services();
-    let _ = service.documents_service.embedding_document_from_sqlite(&hash).await?;
+    let _ = service.documents_service.embedding_document_from_sqlite(&req.hash, req.collection_id).await?;
     Ok((
         StatusCode::OK,
     ).into_response())
@@ -188,6 +218,60 @@ pub async fn generation_request(
     let service = app_state.get_services();
     let search_result = service.documents_service.search_context(&query.query, query.limit, query.reranker_limit).await?;
     let _ = service.documents_service.generate_result(&query.query, search_result).await?;
+    Ok((
+        StatusCode::OK,
+    ).into_response())
+}
+
+
+pub async fn get_collections(
+    ConnectInfo(_): ConnectInfo<SocketAddr>,
+    State(app_state): State<Arc<AppState>>)
+-> Result<Response<Body>, Error>
+{
+    let service = app_state.get_services();
+    let collections = service.database_service.get_collections().await?;
+    Ok((
+        StatusCode::OK,
+        Json(collections),
+    ).into_response())
+}
+
+pub async fn add_collection(
+    ConnectInfo(_): ConnectInfo<SocketAddr>,
+    State(app_state): State<Arc<AppState>>,
+    Json(req): Json<CollectionAddRequest>)
+-> Result<Response<Body>, Error>
+{
+    let service = app_state.get_services();
+    let collection = service.database_service.add_collection(&req.name, &req.description, req.keywords).await?;
+    Ok((
+        StatusCode::OK,
+        Json(collection),
+    ).into_response())
+}
+
+pub async fn update_collection(
+    ConnectInfo(_): ConnectInfo<SocketAddr>,
+    State(app_state): State<Arc<AppState>>,
+    Json(req): Json<CollectionUpdateRequest>)
+-> Result<Response<Body>, Error>
+{
+    let service = app_state.get_services();
+    let _ = service.database_service.update_collection(req.id, &req.description, req.keywords).await?;
+    Ok((
+        StatusCode::OK,
+    ).into_response())
+}
+
+pub async fn delete_collection(
+    ConnectInfo(_): ConnectInfo<SocketAddr>,
+    State(app_state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>)
+-> Result<Response<Body>, Error>
+{
+    let service = app_state.get_services();
+    let _ = service.database_service.delete_collection(id).await?;
     Ok((
         StatusCode::OK,
     ).into_response())

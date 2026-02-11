@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use scraper::Node;
 use tracing::info;
 pub use utilites::Date;
-pub use document::{Document, DocumentCard};
+pub use document::{Document, DocumentCard, Collection};
 pub use error::Error;
 pub use service::{Service, ModelsState};
 

@@ -1,4 +1,5 @@
 use rag_core::{Chunk, DocumentStatus};
+use uuid::Uuid;
 use std::{pin::Pin, sync::Arc};
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool, prelude::FromRow, sqlite::SqliteRow};
@@ -16,6 +17,7 @@ pub struct DocumentDbo
     pub document_number: String,    // Номер документа
     pub document_sign_date: Date, // Дата подписания документа
     pub has_embeddings: bool,
+    pub collection_id: Uuid,
     pub chunks_count: u32,
     pub chunks: Vec<Chunk>,
     pub status: DocumentStatus,
@@ -29,6 +31,7 @@ pub struct DocumentCardDbo
     pub document_number: String, 
     pub document_sign_date: Date,
     pub has_embeddings: bool,
+    pub collection_id: Uuid,
     pub chunks_count: u32,
     pub status: DocumentStatus,
 }
@@ -43,6 +46,7 @@ impl FromRow<'_, SqliteRow> for DocumentDbo
         let document_hash: String =  row.try_get("document_hash")?;
         let document_sign_date: &str =  row.try_get("document_sign_date")?;
         let document_sign_date = document_sign_date.parse().unwrap();
+        let collection_id: String =  row.try_get("collection_id")?;
         let has_embeddings: bool =  row.try_get("has_embeddings")?;
         let chunks_count: u32 = row.try_get("chunks_count")?;
         let chunks: &str = row.try_get("chunks")?;
@@ -57,6 +61,7 @@ impl FromRow<'_, SqliteRow> for DocumentDbo
             document_sign_date,
             has_embeddings,
             chunks_count,
+            collection_id: collection_id.parse().unwrap_or_default(),
             status: status.into(),
             chunks
         };
@@ -75,6 +80,7 @@ impl FromRow<'_, SqliteRow> for DocumentCardDbo
         let document_sign_date: &str =  row.try_get("document_sign_date")?;
         let document_sign_date = document_sign_date.parse().unwrap();
         let has_embeddings: bool =  row.try_get("has_embeddings")?;
+        let collection_id: String =  row.try_get("collection_id")?;
         let chunks_count: u32 = row.try_get("chunks_count")?;
         let status: u8 =  row.try_get("status")?;
         let obj = DocumentCardDbo
@@ -86,6 +92,7 @@ impl FromRow<'_, SqliteRow> for DocumentCardDbo
             document_sign_date,
             has_embeddings,
             chunks_count,
+            collection_id: collection_id.parse().unwrap_or_default(),
             status: status.into(),
         };
         Ok(obj)
@@ -110,13 +117,16 @@ impl DocumentsTable
         document_sign_date TEXT NOT NULL,
         status INTEGER NOT NULL,
         has_embeddings BOOLEAN NOT NULL DEFAULT (0),
+        collection_id TEXT NOT NULL,
         chunks_count INTEGER NOT NULL DEFAULT (0),
         chunks TEXT NOT NULL DEFAULT('[]'),
-        PRIMARY KEY(document_hash)
+        PRIMARY KEY(document_hash),
+        FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS 'document_uri_idx' ON documents (document_uri);
         CREATE INDEX IF NOT EXISTS 'document_number_idx' ON documents (document_number);
         CREATE INDEX IF NOT EXISTS 'document_sign_date_idx' ON documents (document_sign_date);
+        CREATE INDEX IF NOT EXISTS 'document_collection_idx' ON documents (collection_id);
         COMMIT;"
     }
     fn name() -> &'static str 
@@ -137,9 +147,9 @@ impl DocumentsTable
             connection: pool,
         })
     }
-    pub async fn new_default() -> Result<Self>
+    pub async fn new_default(db_name: &str) -> Result<Self>
     {
-        let pool = connection::new_connection("documents").await?;
+        let pool = connection::new_connection(db_name).await?;
         let table = super::DocumentsTable::new(Arc::new(pool)).await?;
         Ok(table)
     }
@@ -184,7 +194,7 @@ impl DocumentsTable
         {
             let connection = Arc::clone(&self.connection);
             let sql = [
-                "SELECT  document_uri, document_title, document_hash, document_number, document_sign_date, status, has_embeddings, chunks_count"
+                "SELECT  document_uri, document_title, document_hash, document_number, document_sign_date, status, has_embeddings, collection_id, chunks_count"
                 ," FROM "
                 ,DocumentsTable::name()
             ].concat();
@@ -200,7 +210,7 @@ impl DocumentsTable
         {
             let connection = Arc::clone(&self.connection);
             let sql = [
-                "SELECT  document_uri, document_title, document_hash, document_number, document_sign_date, status, has_embeddings, chunks_count"
+                "SELECT  document_uri, document_title, document_hash, document_number, document_sign_date, status, has_embeddings, collection_id, chunks_count"
                 ," FROM "
                 ,DocumentsTable::name()
                 ," ORDER BY document_sign_date DESC"
@@ -214,7 +224,7 @@ impl DocumentsTable
         })
     }
 
-    pub fn get_documents_count<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<i64>> + Send + 'a>>
+    pub fn get_documents_count<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<usize>> + Send + 'a>>
     {
         Box::pin(async move
         {
@@ -227,7 +237,7 @@ impl DocumentsTable
             let row = sqlx::query(&sql)
             .fetch_one(&*connection).await?;
             let count: i64 = row.try_get("count")?;
-            Ok(count)
+            Ok(count as usize)
         })
     }
 
@@ -292,6 +302,26 @@ impl DocumentsTable
             Ok(())
         })
     }
+    pub fn move_to_collection<'a>(&'a self, collection_id: Uuid, doc_hash: &'a str) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>
+    {
+        Box::pin(async move 
+        {
+            let connection = Arc::clone(&self.connection);
+            let sql = [
+                "UPDATE  "
+                ,DocumentsTable::name()
+                ," SET collection_id = ? "
+                ," WHERE "
+                ,"document_hash = ?"
+            ].concat();
+            let _ = sqlx::query(&sql)
+            .bind(collection_id.to_string())
+            .bind(doc_hash)
+            .execute(&*connection).await
+                .context(format!("Error when moving document {} to collection {}", doc_hash, collection_id))?;
+            Ok(())
+        })
+    }
     pub fn update<'a>(&'a self, status: DocumentStatus, has_embeddings: bool, chunks_count: u32, doc_hash: &'a str) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>
     {
         let status: u8 = status.into();
@@ -324,8 +354,8 @@ impl DocumentsTable
         number: &'a str,
         sign_date: &'a Date,
         status: DocumentStatus,
-        has_embeddings: bool,
         chunks_count: &'a u32,
+        collection_id: Uuid,
         chunks: &[Chunk]) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>
     {
         let status: u8 = status.into();
@@ -339,8 +369,8 @@ impl DocumentsTable
                 "INSERT INTO "
                 ,DocumentsTable::name()
                 ," ("
-                ,"document_uri, document_hash, document_title, document_number, document_sign_date, status, has_embeddings, chunks_count, chunks"
-                ,") VALUES (?,?,?,?,?,?,?,?,json(?))"
+                ,"document_uri, document_hash, document_title, document_number, document_sign_date, status, has_embeddings, chunks_count, collection_id, chunks"
+                ,") VALUES (?,?,?,?,?,?,?,?,?,json(?))"
             ].concat();
             let _ = sqlx::query(&sql)
             .bind(uri)
@@ -349,8 +379,9 @@ impl DocumentsTable
             .bind(number)
             .bind(sign_date.to_string())
             .bind(status)
-            .bind(has_embeddings)
+            .bind(false)
             .bind(chunks_count)
+            .bind(collection_id.to_string())
             .bind(chunks)
             .execute(&*connection).await?;
             Ok(())
@@ -365,6 +396,7 @@ mod tests
 
     use tracing::info;
     use utilites::Date;
+    use uuid::Uuid;
 
     use crate::{connection, logger};
     #[tokio::test]
@@ -379,8 +411,8 @@ mod tests
             "bla-123",
             &Date::now(),
             crate::documents::DocumentStatus::Loaded,
-            true,
         &123,
+        Uuid::now_v7(),
         &vec![]).await.unwrap();
         let get_doc = table.get_document_by_hash("FE7463FFGEGDGE").await.unwrap();
         let del = table.delete_document("FE7463FFGEGDGE").await.unwrap();

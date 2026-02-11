@@ -20,6 +20,8 @@ where  Self: Sized
     fn model(&self) -> Result<&M>;
     fn model_is_loaded(&self) -> bool;
     fn unload_model(&mut self);
+    ///размерность выходного вектора эмбеддинга
+    fn dimension(&self) -> usize;
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

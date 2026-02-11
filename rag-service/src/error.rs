@@ -31,6 +31,12 @@ pub enum Error
         model: String,
         source: anyhow::Error
     },
+
+    #[error("Ошибка модели `{source}`")]
+    ModelError
+    {
+        source: anyhow::Error
+    },
   
 
 }
