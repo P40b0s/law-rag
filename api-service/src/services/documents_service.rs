@@ -1,8 +1,7 @@
 use std::{collections::HashMap, sync::{Arc, atomic::AtomicBool}};
 
 use database::{DocumentCardDbo, SearchResult};
-use embedding::RerankResult;
-use rag_core::{ProcessStatus, ServiceStatus};
+use rag_core::{ProcessStatus, RerankResult, ServiceStatus};
 use rag_service::{Document, DocumentCard, ModelsState};
 use systema_client::SystemaClient;
 use tokio::sync::mpsc::unbounded_channel;
@@ -184,12 +183,15 @@ impl DocumentsService
         reranker_limit: usize,
     ) -> Result<Vec<RerankResult<SearchResult>>, Error>
     {
+        let rag_service = self.rag_service.clone();
         let collection = self.database_service.get_collections().await?;
-        let collections = self.rag_service.rank_collections_by_relevance(query, collection, 0.7).await?;
-        let collections_names = collections.iter().map(|c| c.db_object.name.as_str()).collect::<Vec<&str>>();
+        //FIXME не находит даже если есть ключевые слова, пока уберем
+        //let collections = self.rag_service.rank_collections_by_relevance(query, collection, 0.2).await?;
+        //let collections_names = collections.iter().map(|c| c.db_object.name.as_str()).collect::<Vec<&str>>();
+        let collections_names = collection.iter().map(|c| c.name.as_str()).collect::<Vec<&str>>();
         let msg = ServiceStatus::mesage(format!("Идет процесс поиска контекста по запросу `{}`, это может занять несколько минут", query));
         self.sse_service.status_message(msg);
-        let context = self.rag_service.search_multiple_collections(query, limit, reranker_limit, collections_names.as_slice()).await?;
+        let context = rag_service.search_multiple_collections(query, limit, reranker_limit, collections_names.as_slice()).await?;
         Ok(context)
     }
 
@@ -204,8 +206,16 @@ impl DocumentsService
         tokio::task::spawn(async move {
             while let Some(msg) = receiver.recv().await
             {
-                let msg = ServiceStatus::process_generation(msg);
-                sse_service.status_message(msg);
+                if &msg == "[END]"
+                {
+                    let msg = ServiceStatus::complete_generation();
+                    sse_service.status_message(msg);
+                }
+                else 
+                {
+                    let msg = ServiceStatus::process_generation(msg);
+                    sse_service.status_message(msg);
+                }
             }
         });
         Ok(())

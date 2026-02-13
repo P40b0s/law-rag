@@ -206,16 +206,16 @@ const handleAddDocument = async () => {
     isLoading.value = false
   }
 }
-//TODO не работает, не забыть исправить!
-const parserHandler = (value: string | [string, string]): void =>
+const parserHandler = (value: string | null): void =>
 {
-  if (typeof value === 'string') 
+  if (!value) return
+  const regex = /(\d{2}\.\d{2}\.\d{4})\s*№\s*(.+)/;
+  const match = value.match(regex);
+  if (match)
   {
-    const regex = /^(\d{2}\.\d{2}\.\d{4})\s+№\s*(.+)$/;
-    const match = value.match(regex);
-    
-    formData.value.sign_date = match ? DateTime.parse(match[1]).date.getTime() : null;
-    formData.value.number = match ? match[2] : "";
+    formData.value.sign_date = DateTime.parse(match[1]).date.getTime()
+    formData.value.number = match[2].trim()
+    formData.value.parser = ''
   }
 }
 

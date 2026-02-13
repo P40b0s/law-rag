@@ -97,6 +97,17 @@ impl ServiceStatus
             status: ProcessStatus::Complete
         }
     }
+    pub fn complete_generation() -> Self
+    {
+        Self 
+        { 
+            hash: String::new(),
+            current_chunk: None,
+            overall_chunks: None,
+            message: "Процесс генерации завершен".to_owned(),
+            status: ProcessStatus::Complete
+        }
+    }
     pub fn qdrant_error<E: Display>(error: E) -> Self
     {
         let error = format!("Произошла ошибка при попытке использования базы данных qdrant: {}", error);

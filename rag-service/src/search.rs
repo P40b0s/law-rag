@@ -1,5 +1,4 @@
 use database::SearchResult;
-use embedding::RerankResult;
 
 
 
@@ -11,7 +10,7 @@ mod tests
     use std::sync::Arc;
 
     use database::QdrantConfig;
-    use embedding::{EmbeddingConfiguration, Generator, ModelPrompt, Model};
+    use embedding::{EmbeddingConfiguration, Generator, GeneratorLlama1b, Model};
     use tracing::{debug, info};
 
     use crate::logger;
@@ -58,7 +57,8 @@ mod tests
         //         }
         //     }
         // );
-        let mut generator = Generator::load(emb_cfg).unwrap();
+
+        let mut generator: GeneratorLlama1b = Generator::load(emb_cfg).unwrap();
         generator.load_model().await.unwrap();
         std::thread::spawn(move ||
             {

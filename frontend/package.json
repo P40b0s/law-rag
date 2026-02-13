@@ -11,9 +11,11 @@
   },
   "dependencies": {
     "@globalart/oxide": "^1.0.1",
+    "@types/marked": "^6.0.0",
     "@vuepic/vue-datepicker": "^12.1.0",
     "apexcharts": "^5.3.5",
     "dompurify": "^3.2.7",
+    "marked": "^17.0.2",
     "naive-ui": "2.43.1",
     "strict-event-emitter": "^0.5.1",
     "ts-pattern": "5.8.0",

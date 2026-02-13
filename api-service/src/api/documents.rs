@@ -5,7 +5,7 @@ use serde::Serialize;
 use tokio::{fs::create_dir_all, io::AsyncWriteExt};
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use uuid::Uuid;
-use crate::{Error, api::{CollectionAddRequest, CollectionUpdateRequest, DocumentRequest, EmbeddingRequest, GenerationRequest}, state::AppState};
+use crate::{Error, api::{CollectionAddRequest, CollectionUpdateRequest, DocumentRequest, EmbeddingRequest, GenerationRequest, types::QdrantContext}, state::AppState};
 use super::layers::{cors_layer};
 
 
@@ -42,7 +42,7 @@ pub fn documents_router(app_state: Arc<AppState>) -> Router
         .route(&super::with_api_version(super::ApiVersion::V1,"/health_check"), 
         get(health_check))
 
-        .route(&super::with_api_version(super::ApiVersion::V1,"/documents/generation_request"), 
+        .route(&super::with_api_version(super::ApiVersion::V1,"/query/generator"), 
         post(generation_request))
 
         .route(&super::with_api_version(super::ApiVersion::V1,"/documents/count"), 
@@ -60,8 +60,11 @@ pub fn documents_router(app_state: Arc<AppState>) -> Router
         .route(&super::with_api_version(super::ApiVersion::V1,"/collections/delete/{id}"), 
         get(delete_collection))
 
-         .route(&super::with_api_version(super::ApiVersion::V1,"/collections/update"), 
+        .route(&super::with_api_version(super::ApiVersion::V1,"/collections/update"), 
         post(update_collection))
+          
+        .route(&super::with_api_version(super::ApiVersion::V1,"/query/results"), 
+        post(search_results))
     
         .with_state(app_state.clone())
         .layer(cors_layer(app_state))
@@ -220,6 +223,25 @@ pub async fn generation_request(
     let _ = service.documents_service.generate_result(&query.query, search_result).await?;
     Ok((
         StatusCode::OK,
+    ).into_response())
+}
+
+
+pub async fn search_results(
+    ConnectInfo(_): ConnectInfo<SocketAddr>,
+    State(app_state): State<Arc<AppState>>,
+    Json(query): Json<GenerationRequest>)
+-> Result<Response<Body>, Error>
+{
+    let service = app_state.get_services();
+    let search_result = service.documents_service.search_context(&query.query, query.limit, query.reranker_limit).await?;
+    let search_result: Vec<QdrantContext> = search_result.into_iter().map(|v|
+    {
+        v.into()
+    }).collect();
+    Ok((
+        StatusCode::OK,
+        Json(search_result),
     ).into_response())
 }
 

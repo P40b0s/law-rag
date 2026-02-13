@@ -1,13 +1,13 @@
 use std::{collections::{self, HashMap}, fmt::Display, ops::Deref, sync::{Arc, atomic::AtomicBool}};
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use database::{QdrantConfig, QdrantManager, SearchResult};
-use embedding::{BgeReranker, EmbeddingConfiguration, Generator, Model, ModelPrompt, RerankResult, RetriverModel};
-use rag_core::{Chunk, ServiceStatus};
+use embedding::{BgeReranker, EmbeddingConfiguration, Generator, GeneratorLlama1b, GeneratorLlama8b, Model, RetriverModel};
+use rag_core::{Chunk, RerankResult, ServiceStatus};
 use serde::Serialize;
 use tokio::sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender}};
 use tracing::{debug, error, info, warn};
 use utilites::Date;
-
+pub type LlmModel = GeneratorLlama1b;
 use crate::{Collection, Error};
 
 #[derive(Debug, Serialize)]
@@ -24,7 +24,7 @@ pub struct Service
     retriver: RwLock<RetriverModel>,
     retriver_dimension: usize,
     reranker: RwLock<BgeReranker>,
-    generator: RwLock<Generator>,
+    generator: RwLock<LlmModel>,
 
 }
 
@@ -32,7 +32,7 @@ impl Service
 {
     pub async fn new(emb_cfg: Arc<EmbeddingConfiguration>) -> Result<Self, Error>
     {
-        let generator = Generator::load(Arc::clone(&emb_cfg))
+        let generator = LlmModel::load(Arc::clone(&emb_cfg))
             .inspect_err(|e| error!("Error when loading generator `{}`", e))
             .map_err(|e| Error::ModelLoadError { model: "generator".to_owned(), source: e })?;
         let retriver = RetriverModel::new(Arc::clone(&emb_cfg)).await
@@ -118,8 +118,9 @@ impl Service
         qm.ensure_collection().await?;
         Ok(())
     }
-    //tokio spawn inside, may be long operation
+    //std::thread::spawn inside, may be long operation
     //progress messages and errors sends via sender
+    //uses separate OS thread to avoid blocking tokio runtime with CPU-bound embedding generation
     pub async fn add_chunks_to_qdrant(self: Arc<Self>, chunks: Vec<Chunk>, collection_name: &str) -> Result<UnboundedReceiver<ServiceStatus>, Error>
     {
         let cfg = self.qdrant_config(collection_name);
@@ -127,25 +128,38 @@ impl Service
         let service = Arc::clone(&drop_service);
         let _ = service.check_load_embedding_models().await?;
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        tokio::spawn(async move 
+        let handle = tokio::runtime::Handle::current();
+        std::thread::spawn(move ||
+        {
+            handle.block_on(async move
             {
                 let retriver = service.retriver.read().await;
                 let dimension = retriver.dimension();
                 let qm = QdrantManager::new(cfg, dimension)
                     .inspect_err(|e| error!("Error creating QdrantManager: {}", e));
+
                 if let Ok(qm) = qm
                 {
-                    //auto send error to client
-                    let _added = qm.add_chunks_to_qdrant(chunks, &retriver, sender).await;
+                    let check_collection = qm.ensure_collection().await;
+                    if let Err(e) = check_collection
+                    {
+                        let _ = sender.send(ServiceStatus::qdrant_error(e));
+                    }
+                    else
+                    {
+                        //auto send error to client
+                        let _added = qm.add_chunks_to_qdrant(chunks, &retriver, sender).await;
+                    }
                 }
                 else
                 {
                     let _ = sender.send(ServiceStatus::qdrant_error(qm.err().unwrap()));
+
                 }
-            }
-        );
+            });
+        });
         Ok(receiver)
-        
+
     }
 
     async fn check_load_embedding_models(&self) -> Result<(), Error>
@@ -162,6 +176,7 @@ impl Service
         }
         Ok(())
     }
+    
     ///может потратить много времени на реранкинг, пока не буду канал выводить для статуса
     pub async fn search(&self, query: &str, limit: usize, reranker_limit: usize, collection_name: &str) -> Result<Vec<RerankResult<SearchResult>>, Error>
     {
@@ -179,59 +194,84 @@ impl Service
     ///
     /// Собирает результаты из всех указанных коллекций, сортирует по score
     /// и возвращает топ reranker_limit результатов по всем коллекциям
+    /// Search across multiple collections using CPU-bound embedding generation on separate thread
+    /// to avoid blocking the tokio runtime
     pub async fn search_multiple_collections(
-        &self,
+        self: Arc<Self>,
         query: &str,
         limit: usize,
         reranker_limit: usize,
         collection_names: &[&str]
     ) -> Result<Vec<RerankResult<SearchResult>>, Error>
     {
-        if collection_names.is_empty() {
+        if collection_names.is_empty() 
+        {
             return Ok(Vec::new());
         }
 
         let _ = self.check_load_embedding_models().await?;
-        let reranker = self.reranker.read().await;
-        let retriver = self.retriver.read().await;
-
-        let mut all_results = Vec::new();
-
-        for collection_name in collection_names 
+        let query = query.to_string();
+        let collection_names: Vec<String> = collection_names.iter().map(|s| s.to_string()).collect();
+        let service = Arc::clone(&self);
+        //let retriver = self.retriver.clone();
+        //let reranker = self.reranker.clone();
+        let handle = tokio::runtime::Handle::current();
+        // Run CPU-bound embedding generation on separate thread
+        let result = std::thread::spawn(move || 
         {
-            let cfg = self.qdrant_config(collection_name);
-            let qm = QdrantManager::new(cfg, retriver.dimension())
-                .inspect_err(|e| error!("Error creating QdrantManager for collection {}: {}", collection_name, e))?;
-
-            // Для каждой коллекции используем limit, но не ограничиваем reranker_limit
-            // т.к. финальный лимит будет применен после объединения всех результатов
-            match qm.semantic_search(&query, limit, limit, &retriver, &reranker, None).await 
+            handle.block_on(async move 
             {
-                Ok(mut results) => 
+                let retriver = service.retriver.read().await;
+                let reranker = service.reranker.read().await;
+                let mut all_results = Vec::new();
+
+                for collection_name in &collection_names
                 {
-                    info!("Found {} results in collection {}", results.len(), collection_name);
-                    all_results.append(&mut results);
-                },
-                Err(e) => 
-                {
-                    warn!("Error searching in collection {}: {}", collection_name, e);
-                    // Продолжаем поиск в других коллекциях даже если одна из них вернула ошибку
+                    let cfg = service.qdrant_config(collection_name);
+
+                    let qm = QdrantManager::new(cfg, retriver.dimension())
+                        .inspect_err(|e| error!("Error creating QdrantManager for collection {}: {}", collection_name, e))?;
+                    let _check_collection = qm.ensure_collection().await.map_err(|e| Error::DatabaseError(e));
+
+                    // Для каждой коллекции используем limit, но не ограничиваем reranker_limit
+                    // т.к. финальный лимит будет применен после объединения всех результатов
+                    match qm.semantic_search(&query, limit, limit, &retriver, &reranker, None).await
+                    {
+                        Ok(mut results) =>
+                        {
+                            info!("Found {} results in collection {}", results.len(), collection_name);
+                            all_results.append(&mut results);
+                        },
+                        Err(e) =>
+                        {
+                            warn!("Error searching in collection {}: {}", collection_name, e);
+                            // Продолжаем поиск в других коллекциях даже если одна из них вернула ошибку
+                        }
+                    }
                 }
-            }
-        }
 
-        // Сортируем все результаты по score в порядке убывания (большие score первыми)
-        all_results.sort_by(|a, b| 
+                // Сортируем все результаты по score в порядке убывания (большие score первыми)
+                all_results.sort_by(|a, b|
+                {
+                    b.score.partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+                // Берем только топ reranker_limit результатов
+                all_results.truncate(reranker_limit);
+
+                info!("Returning {} top results from {} collections", all_results.len(), collection_names.len());
+                Ok(all_results)
+            })
+        }).join();
+        let result = match result
         {
-            b.score.partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+            Ok(Ok(res)) => res,
+            Ok(Err(e)) => return Err(e),
+            Err(e) => return Err(Error::ThreadError(anyhow!("Thread panicked: {:?}", e))),
+        };
 
-        // Берем только топ reranker_limit результатов
-        all_results.truncate(reranker_limit);
-
-        info!("Returning {} top results from {} collections", all_results.len(), collection_names.len());
-        Ok(all_results)
+        Ok(result)
     }
 
     /// Ранжирует коллекции по релевантности к запросу пользователя
@@ -282,10 +322,10 @@ impl Service
             .iter()
             .map(|c| {
                 let keywords_str = c.keywords.join(", ");
-                format!("{}: {}. Ключевые слова: {}", c.name, c.description, keywords_str)
+                format!("{}: {}. {}", c.name, c.description, keywords_str)
             })
             .collect();
-
+        debug!("strings for reranking: {:?}", &descriptions);
         // Используем rerank для оценки релевантности
         // top_k = collections.len() чтобы получить все результаты
         let ranked_results = reranker.rerank(query, descriptions, collections.len()).await
@@ -452,6 +492,8 @@ mod tests
     #[tokio::test]
     async fn search_and_gen()
     {
+        use embedding::GeneratorLlama1b; // or GeneratorLlama8b
+
         logger::init();
         let emb_cfg = Arc::new(EmbeddingConfiguration::default());
         let service = Arc::new(super::Service::new(emb_cfg).await.unwrap());

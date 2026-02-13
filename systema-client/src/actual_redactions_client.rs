@@ -103,6 +103,7 @@ impl ActualRedactionsClient
         let redactions: Vec<super::models::ExtendedRedaction> = redactions.redactions.into_iter().map(|r| r.into()).collect();
         Ok(redactions)
     }
+    
     async fn get_contents(redaction_id: &u32) -> Result<super::models::Contents>
     {
         let client = Self::client().with_path("getcontent");

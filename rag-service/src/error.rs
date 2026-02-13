@@ -8,6 +8,8 @@ pub enum Error
     DatabaseError(#[from] database::Error),
     #[error(transparent)]
     JoinError(#[from] tokio::task::JoinError),
+    #[error("Ошибка выполенния потока `{0}`")]
+    ThreadError(anyhow::Error),
     #[error(transparent)]
     EmbeddingsError
     {

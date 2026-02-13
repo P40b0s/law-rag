@@ -11,7 +11,6 @@ pub use document::{Document, DocumentCard, Collection};
 pub use error::Error;
 pub use service::{Service, ModelsState};
 
-//TODO перенести всю логику запроса и его обработки сюда в том числе вычисление эмбеддингов 
 #[cfg(test)]
 mod tests
 {

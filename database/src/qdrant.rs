@@ -1,7 +1,5 @@
-use std::fmt::format;
-
-use embedding::{BgeReranker, Model, RerankResult};
-use rag_core::{Chunk, ServiceStatus};
+use embedding::{BgeReranker, Model};
+use rag_core::{Chunk, RerankResult, ServiceStatus};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -128,61 +126,152 @@ impl QdrantManager
         Ok(())
     }
     
-    /// Добавление чанков с эмбеддингами в Qdrant
+    /// Размер мини-батча для генерации эмбеддингов.
+    /// Несколько чанков обрабатываются за один forward pass через модель.
+    const EMBEDDING_BATCH_SIZE: usize = 8;
+
+    /// Добавление чанков с эмбеддингами в Qdrant (батчевая обработка)
     pub async fn add_chunks_to_qdrant<'model>(
         &self,
         chunks: Vec<Chunk>,
         retriver_model: &'model embedding::RetriverModel,
         sender: tokio::sync::mpsc::UnboundedSender<ServiceStatus>
     ) -> Result<Vec<String>> {
+        use tokio::time::{timeout, Duration};
+
         let mut all_ids = Vec::new();
         let chunks_count = chunks.len();
         let doc_hash = chunks.first().map(|c| c.hash.clone()).unwrap_or(String::new());
+        let dimension = retriver_model.dimension();
 
-        info!("Starting to add {} chunks to Qdrant for document {}", chunks_count, doc_hash);
+        info!("Starting to add {} chunks to Qdrant for document {} (batch_size={})",
+            chunks_count, doc_hash, Self::EMBEDDING_BATCH_SIZE);
         let start_time = std::time::Instant::now();
-        let mut last_progress_log = std::time::Instant::now();
 
-        // Обрабатываем батчами для эффективности
-        for (i, chunk) in chunks.into_iter().enumerate()
+        // Обрабатываем мини-батчами
+        for (batch_idx, batch) in chunks.chunks(Self::EMBEDDING_BATCH_SIZE).enumerate()
         {
-            // Логируем прогресс каждые 10 чанков или каждые 30 секунд
-            if i % 10 == 0 || last_progress_log.elapsed().as_secs() >= 30 {
-                let elapsed = start_time.elapsed();
-                let chunks_per_sec = if elapsed.as_secs() > 0 {
-                    i as f64 / elapsed.as_secs() as f64
-                } else {
-                    0.0
-                };
-                let eta_secs = if chunks_per_sec > 0.0 {
-                    ((chunks_count - i) as f64 / chunks_per_sec) as u64
-                } else {
-                    0
-                };
+            let batch_start = batch_idx * Self::EMBEDDING_BATCH_SIZE;
+            let batch_end = (batch_start + batch.len()).min(chunks_count);
 
-                info!("Progress: {}/{} chunks ({:.1}%), {:.2} chunks/sec, ETA: {}s",
-                    i, chunks_count,
-                    (i as f64 / chunks_count as f64) * 100.0,
-                    chunks_per_sec,
-                    eta_secs
+            let elapsed = start_time.elapsed();
+            let processed = batch_start;
+            let chunks_per_sec = if elapsed.as_secs() > 0 {
+                processed as f64 / elapsed.as_secs_f64()
+            } else {
+                0.0
+            };
+            let eta_secs = if chunks_per_sec > 0.0 {
+                ((chunks_count - processed) as f64 / chunks_per_sec) as u64
+            } else {
+                0
+            };
+
+            info!("Processing batch {}/{} (chunks {}-{}/{}, {:.2} chunks/sec, ETA: {}s)",
+                batch_idx + 1,
+                (chunks_count + Self::EMBEDDING_BATCH_SIZE - 1) / Self::EMBEDDING_BATCH_SIZE,
+                batch_start + 1, batch_end, chunks_count,
+                chunks_per_sec, eta_secs
+            );
+
+            // Собираем тексты для батчевого эмбеддинга
+            let texts: Vec<&str> = batch.iter().map(|c| c.content.as_str()).collect();
+
+            // Генерируем эмбеддинги для всего батча за один forward pass
+            let embedding_timeout = Duration::from_secs(300);
+            let embeddings_result = timeout(
+                embedding_timeout,
+                retriver_model.generate_embeddings_batch(&texts)
+            ).await;
+
+            let embeddings = match embeddings_result {
+                Ok(Ok(embs)) => {
+                    info!("Generated {} embeddings for batch {}", embs.len(), batch_idx + 1);
+                    embs
+                },
+                Ok(Err(e)) => {
+                    error!("Error generating embeddings for batch {}: {}", batch_idx + 1, e);
+                    let status = ServiceStatus::error(doc_hash.clone(), e);
+                    let _ = sender.send(status);
+                    return Err(Error::AnyhowError(anyhow::anyhow!(
+                        "Error generating embeddings for batch {}", batch_idx + 1
+                    )));
+                },
+                Err(_) => {
+                    error!("Timeout generating embeddings for batch {} after {:?}",
+                        batch_idx + 1, embedding_timeout);
+                    let status = ServiceStatus::error(
+                        doc_hash.clone(),
+                        anyhow::anyhow!("Timeout generating embeddings for batch {}", batch_idx + 1)
+                    );
+                    let _ = sender.send(status);
+                    return Err(Error::AnyhowError(anyhow::anyhow!(
+                        "Timeout generating embeddings for batch {}", batch_idx + 1
+                    )));
+                }
+            };
+
+            if embeddings.len() != batch.len() {
+                error!("Embeddings count mismatch: expected {}, got {}", batch.len(), embeddings.len());
+                return Err(Error::AnyhowError(anyhow::anyhow!(
+                    "Embeddings count mismatch: expected {}, got {}", batch.len(), embeddings.len()
+                )));
+            }
+
+            // Создаем точки для Qdrant из всего батча
+            let mut points = Vec::with_capacity(batch.len());
+            for (i, (chunk, embedding)) in batch.iter().zip(embeddings.into_iter()).enumerate()
+            {
+                let global_idx = batch_start + i;
+
+                // Проверяем размерность
+                if embedding.len() != dimension {
+                    error!("Vector size mismatch for chunk {}/{}: expected {}, got {}",
+                        global_idx + 1, chunks_count, dimension, embedding.len());
+                    return Err(Error::VectorSizeError(dimension, embedding.len()));
+                }
+
+                let point = self.create_point(chunk.clone(), embedding)?;
+                points.push(point);
+
+                // Отправляем прогресс для каждого чанка
+                let process = ServiceStatus::process_qdrant(
+                    &chunk.hash,
+                    global_idx,
+                    chunks_count
                 );
-                last_progress_log = std::time::Instant::now();
+                let _ = sender.send(process);
             }
 
-            let batch_ids = self.process_batch(chunk, chunks_count, i, retriver_model, sender.clone()).await
-                .map_err(|e| ServiceStatus::error(doc_hash.clone(), e));
+            // Upsert всего батча в Qdrant за одну операцию
+            let point_structs: Vec<PointStruct> = points.iter()
+                .map(|p| p.into())
+                .collect();
+            let builder = UpsertPointsBuilder::new(&self.config.collection_name, point_structs);
 
-            if let Err(e) = batch_ids
-            {
-                error!("Failed to process chunk {}/{}: {}", i + 1, chunks_count, e.message);
-                let error = Error::AnyhowError(anyhow::anyhow!(e.message.clone()));
-                let _ = sender.send(e);
-                return Err(error);
+            let upsert_timeout = Duration::from_secs(60);
+            let upsert_result = timeout(
+                upsert_timeout,
+                self.client.upsert_points(builder.build())
+            ).await;
+
+            match upsert_result {
+                Ok(Ok(_)) => {
+                    info!("Upserted batch {} ({} points) to Qdrant", batch_idx + 1, points.len());
+                },
+                Ok(Err(e)) => {
+                    error!("Error upserting batch {}: {}", batch_idx + 1, e);
+                    return Err(e.into());
+                },
+                Err(_) => {
+                    error!("Timeout upserting batch {} after {:?}", batch_idx + 1, upsert_timeout);
+                    return Err(Error::AnyhowError(anyhow::anyhow!(
+                        "Timeout upserting batch {}", batch_idx + 1
+                    )));
+                }
             }
-            else
-            {
-                all_ids.extend(batch_ids.unwrap());
-            }
+
+            all_ids.extend(points.iter().map(|p| p.id.clone()));
         }
 
         let total_time = start_time.elapsed();
@@ -193,100 +282,6 @@ impl QdrantManager
         );
         let _ = sender.send(ServiceStatus::complete(&doc_hash));
         Ok(all_ids)
-    }
-    
-    async fn process_batch<'model>(&self,
-        chunk: Chunk,
-        count: usize,
-        current: usize,
-        retriver_model: &'model embedding::RetriverModel,
-        sender: tokio::sync::mpsc::UnboundedSender<ServiceStatus>
-    ) -> Result<Vec<String>>
-    {
-        use tokio::time::{timeout, Duration};
-
-        let mut points = Vec::new();
-        let dimension = retriver_model.dimension();
-
-        info!("Processing chunk {}/{} (hash: {}, content length: {} bytes)",
-            current + 1, count, chunk.hash, chunk.content.len());
-
-        // Получаем эмбеддинг для чанка с таймаутом
-        let embedding_timeout = Duration::from_secs(300); // 5 минут максимум на один чанк
-        let embeddings_result = timeout(
-            embedding_timeout,
-            retriver_model.generate_embeddings(&[chunk.content.as_str()])
-        ).await;
-
-        let embeddings = match embeddings_result {
-            Ok(Ok(emb)) => {
-                info!("Successfully generated embeddings for chunk {}/{}", current + 1, count);
-                emb
-            },
-            Ok(Err(e)) => {
-                error!("Error generating embeddings for chunk {}/{}: {}", current + 1, count, e);
-                return Err(e.into());
-            },
-            Err(_) => {
-                error!("Timeout generating embeddings for chunk {}/{} after {:?}",
-                    current + 1, count, embedding_timeout);
-                return Err(Error::AnyhowError(anyhow::anyhow!(
-                    "Timeout generating embeddings for chunk {}/{}", current + 1, count
-                )));
-            }
-        };
-
-        // Проверяем размерность
-        if embeddings.len() != dimension
-        {
-            error!("Vector size mismatch for chunk {}/{}: expected {}, got {}",
-                current + 1, count, dimension, embeddings.len());
-            return Err(Error::VectorSizeError(dimension, embeddings.len()));
-        }
-
-        let process = ServiceStatus::process_qdrant(
-            &chunk.hash,
-            current,
-            count
-        );
-
-        // Создаем точку для Qdrant
-        let point = self.create_point(chunk, embeddings)?;
-        points.push(point);
-
-        // Конвертируем в PointStruct для Qdrant
-        let point_structs: Vec<PointStruct> = points.iter()
-            .map(|p| p.into())
-            .collect();
-        let builder = UpsertPointsBuilder::new(&self.config.collection_name, point_structs);
-
-        // Вставляем в Qdrant с таймаутом
-        info!("Upserting chunk {}/{} to Qdrant", current + 1, count);
-        let upsert_timeout = Duration::from_secs(60); // 1 минута на вставку
-        let upsert_result = timeout(
-            upsert_timeout,
-            self.client.upsert_points(builder.build())
-        ).await;
-
-        match upsert_result {
-            Ok(Ok(_)) => {
-                info!("Successfully upserted chunk {}/{} to Qdrant", current + 1, count);
-            },
-            Ok(Err(e)) => {
-                error!("Error upserting chunk {}/{}: {}", current + 1, count, e);
-                return Err(e.into());
-            },
-            Err(_) => {
-                error!("Timeout upserting chunk {}/{} after {:?}", current + 1, count, upsert_timeout);
-                return Err(Error::AnyhowError(anyhow::anyhow!(
-                    "Timeout upserting chunk {}/{}", current + 1, count
-                )));
-            }
-        }
-
-        let _sended = sender.send(process);
-
-        Ok(points.iter().map(|p| p.id.clone()).collect())
     }
     
     fn create_point(
@@ -674,7 +669,6 @@ impl AsRef<str> for SearchResult
         &self.payload.text
     }
 }
-
 
 
 impl SearchResult 

@@ -37,6 +37,13 @@ impl ToString for Collection
         self.description.clone()
     }
 }
+impl AsRef<str> for Collection
+{
+    fn as_ref(&self) -> &str 
+    {
+        &self.description
+    }
+}
 
 
 impl From<CollectionDbo> for Collection

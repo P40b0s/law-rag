@@ -54,7 +54,7 @@ class ModelStateServiceService
     }
     async load_generator_model(): Promise<ModelsState | undefined>
     {
-        const result: Result<ModelsState, HTTPError> = await get('models/load_generator_model', ModelsStateSchema);
+        const result: Result<ModelsState, HTTPError> = await get('models/load_generation_model', ModelsStateSchema);
         if (result.isErr())
         {
             notify_service.error("Ошибка получения статуса моделей", result.unwrapErr().message);
@@ -68,7 +68,7 @@ class ModelStateServiceService
     }
     async unload_generator_model(): Promise<ModelsState | undefined>
     {
-        const result: Result<ModelsState, HTTPError> = await get('models/unload_generator_model', ModelsStateSchema);
+        const result: Result<ModelsState, HTTPError> = await get('/models/unload_generation_model', ModelsStateSchema);
         if (result.isErr())
         {
             notify_service.error("Ошибка получения статуса моделей", result.unwrapErr().message);

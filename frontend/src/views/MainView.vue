@@ -6,6 +6,9 @@ n-tabs.tabs(type="line" animated )
     n-tab-pane(name="collections" tab="Коллекции")
         collections
     n-tab-pane(name="queries" tab="Запросы")
+        queries
+    n-tab-pane(name="generation" tab="Генерация")
+        generation
 
 status
 </template>
@@ -19,6 +22,8 @@ import DocumentsList from '@/components/DocumentsList.vue';
 import Collections from '@/components/Collections.vue';
 import Status from '@/components/Status.vue';
 import { http_service } from '@/services/http_service/http_service';
+import Queries from '@/components/QueryForm.vue';
+import Generation from '@/components/GenerationForm.vue';
 </script>
 <script lang="ts" setup>
 const emitter = inject<Emitter<Events>>('emitter') as Emitter<Events>;

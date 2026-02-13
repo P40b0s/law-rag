@@ -36,3 +36,4 @@ text-splitter = {git = "https://github.com/benbrandt/text-splitter.git", feature
 figment =  {version = "0.10.19", features = ["toml", "env"]}
 tokio-test="0.4.5"
 parking_lot = "*"
+reqwest = {version = "0.12", features = ["json", "stream"]}

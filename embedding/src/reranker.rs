@@ -4,26 +4,12 @@ use crate::{EmbeddingConfiguration, model::{Model, ModelName}};
 use anyhow::{Context, Result, anyhow};
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
+use rag_core::RerankResult;
 use tokenizers::{PaddingParams, Tokenizer};
 use tracing::info;
 use candle_transformers::models::xlm_roberta::{XLMRobertaForSequenceClassification, Config};
 use serde::{Deserialize, Serialize};
-
 const DTYPE: DType = DType::F32;
-
-#[derive(Debug, Clone)]
-pub struct RerankResult<P: ToString>
-{
-    pub score: f32,
-    pub db_object: P,
-}
-impl<P: ToString> ToString for RerankResult<P>
-{
-    fn to_string(&self) -> String 
-    {
-        self.db_object.to_string()
-    }
-}
 
 /// BGE Reranker - модель для переранжирования результатов поиска.
 ///

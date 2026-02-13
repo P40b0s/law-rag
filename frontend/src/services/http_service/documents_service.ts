@@ -19,13 +19,6 @@ interface EmbeddingRequest
     collection_id: string;
 }
 
-interface GenerationRequest
-{
-    query: string;
-    limit: number;
-    reranker_limit: number;
-}
-
 class DocumentsService 
 {
     /**
@@ -94,38 +87,8 @@ class DocumentsService
 
         if (result.isErr())
         {
-            //notify_service.error("Ошибка создания эмбеддингов", result.unwrapErr().message);
             return false;
         }
-
-        notify_service.success("Эмбеддинг создан", `Эмбеддинг для документа ${hash} успешно создан`);
-        return true;
-    }
-
-    /**
-     * Генерация ответа на основе поискового запроса с указанием коллекций
-     */
-    async generation_request(query: string, limit: number = 10, reranker_limit: number = 5): Promise<boolean> {
-        const payload: GenerationRequest =
-        {
-            query,
-            limit,
-            reranker_limit
-        };
-
-        const result: Result<void, HTTPError> = await post(
-            'documents/generation_request',
-            'POST',
-            payload
-        );
-
-        if (result.isErr())
-        {
-            //notify_service.error("Ошибка генерации ответа", result.unwrapErr().message);
-            return false;
-        }
-
-        notify_service.success("Запрос обработан", "Генерация ответа выполнена успешно");
         return true;
     }
 

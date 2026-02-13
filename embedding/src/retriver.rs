@@ -138,18 +138,17 @@ impl RetriverModel
         })
     }
 
-    /// Генерирует вектор эмбеддингов для массива текстов.
+    /// Генерирует вектор эмбеддингов для одного текста.
     ///
     /// # Аргументы
-    /// * `texts` - Слайс строк для генерации эмбеддингов
+    /// * `texts` - Слайс строк (ожидается ровно 1 элемент)
     ///
     /// # Возвращает
     /// * `Ok(Vec<f32>)` - Вектор эмбеддингов (размерность = self.dimension)
     /// * `Err` - Если произошла ошибка или количество текстов != 1
     ///
     /// # Примечание
-    /// Функция ожидает ровно один текст во входном массиве.
-    /// Для батчевой обработки используйте `embed_tensor_batch` напрямую.
+    /// Для батчевой обработки используйте `generate_embeddings_batch`.
     pub async fn generate_embeddings(&self, texts: &[&str]) -> Result<Vec<f32>>
     {
         // Валидация входных данных
@@ -186,6 +185,28 @@ impl RetriverModel
         {
             return Err(anyhow!("Vector Vec<Vec<f32>> is empty or bigger than 1"));
         }
+    }
+
+    /// Генерирует эмбеддинги для батча текстов за один forward pass.
+    ///
+    /// # Аргументы
+    /// * `texts` - Слайс строк для генерации эмбеддингов
+    ///
+    /// # Возвращает
+    /// * `Ok(Vec<Vec<f32>>)` - Вектор эмбеддингов для каждого текста
+    pub async fn generate_embeddings_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>>
+    {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        info!("Generating batch embeddings for {} texts", texts.len());
+        let start = std::time::Instant::now();
+        let tensor = self.embed_tensor_batch(texts).await?;
+        let vectors = tensor.to_vec2()?;
+        info!("Batch embedding generation took {:?}, produced {} vectors of dimension {}",
+            start.elapsed(), vectors.len(), vectors.first().map(|v| v.len()).unwrap_or(0));
+        Ok(vectors)
     }
     /// Генерирует тензор эмбеддингов для батча текстов.
     ///
