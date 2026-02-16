@@ -224,18 +224,22 @@ impl Service
                 let retriver = service.retriver.read().await;
                 let reranker = service.reranker.read().await;
                 let mut all_results = Vec::new();
-
+                let query_embeddings = retriver.generate_embeddings(&[&query]).await
+                    .map_err(|e| Error::EmbeddingsError {source: embedding::Error::RerankerError { source: e }})
+                    .inspect_err(|e| error!("Create embeddings error: {}", e))
+                    .unwrap_or(Vec::new());
                 for collection_name in &collection_names
                 {
                     let cfg = service.qdrant_config(collection_name);
 
                     let qm = QdrantManager::new(cfg, retriver.dimension())
                         .inspect_err(|e| error!("Error creating QdrantManager for collection {}: {}", collection_name, e))?;
-                    let _check_collection = qm.ensure_collection().await.map_err(|e| Error::DatabaseError(e));
+                    let _check_collection = qm.ensure_collection().await
+                        .map_err(|e| Error::DatabaseError(e));
 
                     // Для каждой коллекции используем limit, но не ограничиваем reranker_limit
                     // т.к. финальный лимит будет применен после объединения всех результатов
-                    match qm.semantic_search(&query, limit, limit, &retriver, &reranker, None).await
+                    match qm.semantic_search_with_embeddings(&query, limit, limit, query_embeddings.clone(), &reranker, None).await
                     {
                         Ok(mut results) =>
                         {

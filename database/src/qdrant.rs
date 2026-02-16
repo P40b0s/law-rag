@@ -360,6 +360,57 @@ impl QdrantManager
         //reranking.into_iter().map(|r| r)
         Ok(reranking)
     }
+
+     /// Поиск по семантическому сходству (если коллекций несколько выносим создание эмбеддингов за цикл)
+    pub async fn semantic_search_with_embeddings<'model>(
+        &self,
+        query: &str,
+        limit: usize,
+        rerank_limit: usize,
+        embeddings: Vec<f32>,
+        reranker_model: &'model embedding::BgeReranker,
+        filter: Option<SearchFilter>,
+    ) -> Result<Vec<RerankResult<SearchResult>>> {
+        // Получаем эмбеддинг для запроса
+        //let query_vector = retriver_model.generate_embeddings(&[query]).await?;
+        // Строим запрос к Qdrant
+        let mut search_request = SearchPoints 
+        {
+            collection_name: self.config.collection_name.clone(),
+            vector: embeddings,
+            limit: limit as u64,
+            with_payload: Some(WithPayloadSelector 
+            {
+                selector_options: Some(
+                    qdrant_client::qdrant::with_payload_selector::SelectorOptions::Enable(true)
+                ),
+            }),
+            ..Default::default()
+        };
+        
+        // Добавляем фильтры, если есть
+        if let Some(filter) = filter 
+        {
+            search_request.filter = Some(filter.into());
+        }
+         //let builder = SearchPointsBuilder::new(&self.config.collection_name, search_request, limit);
+        // Вставляем в Qdrant
+        //let _ = self.client.upsert_points(builder.build()).await?;
+        // Выполняем поиск
+        let search_results = self.client
+            .search_points(search_request)
+            .await?;
+        
+        // Конвертируем результаты
+        let results: Vec<SearchResult> = search_results.result
+            .into_iter()
+            .map(|sp| SearchResult::from_scored_point(sp))
+            .collect();
+        let reranking = reranker_model.rerank(query, results, rerank_limit).await
+            .inspect_err(|e| tracing::error!("{}", e))?;
+        //reranking.into_iter().map(|r| r)
+        Ok(reranking)
+    }
     
     /// Поиск с гибридным подходом (семантический + ключевые слова)
     pub async fn hybrid_search<'model>(
