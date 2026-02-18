@@ -91,6 +91,9 @@ pub struct DocumentNodes<C: ToString + Debug + AsRef<str>>
     indexes: BTreeMap<usize, (usize, usize)>,
     // Дети для каждого узла
     children: HashMap<usize, Vec<usize>>,
+    // Карта родителей: child_idx -> parent_idx; строится при insert
+    #[serde(skip)]
+    parent_of: HashMap<usize, usize>,
     // Узлы по уровням
     by_level: [Vec<usize>; MAX_LVL], //максимальный уровень
 }
@@ -143,6 +146,7 @@ impl<C: ToString + Debug + AsRef<str>> DocumentNodes<C>
             nodes: Vec::with_capacity(2000),
             indexes: BTreeMap::new(),
             children: HashMap::with_capacity(2000),
+            parent_of: HashMap::with_capacity(2000),
             by_level: [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()],
         }
     }
@@ -242,14 +246,15 @@ impl<C: ToString + Debug + AsRef<str>> DocumentNodes<C>
         
         self.by_level[level].insert(pos, idx);
 
-        if level > 0 
+        if level > 0
         {
             if let Some(parent_idx) = self.find_parent(&node)
             {
                 self.children.entry(parent_idx)
                 .or_insert_with(Vec::new)
                 .push(idx);
-        
+                // Запоминаем прямого родителя для O(1) подъёма по дереву
+                self.parent_of.insert(idx, parent_idx);
             }
         }
         // Сохраняем узел
@@ -343,36 +348,47 @@ impl<C: ToString + Debug + AsRef<str>> DocumentNodes<C>
         result.sort_by_key(|&node| node.content_lvl);
         result
     }
-    pub fn find_all_parents_by_node(&self, node: &DocumentNode<C>) -> Vec<&DocumentNode<C>> 
+    /// Возвращает idx ноды в `self.nodes` по её уровню и start_id.
+    /// Binary-search по `by_level[level]` — O(log n_at_level).
+    fn node_idx(&self, node: &DocumentNode<C>) -> Option<usize>
     {
-        self.find_all_parents(node.content_start_id, node.content_end_id, node.content_lvl)
+        let level = node.content_lvl;
+        if level >= MAX_LVL { return None; }
+        let candidates = &self.by_level[level];
+        let pos = candidates.binary_search_by(|&i|
+        {
+            let (start, _) = self.indexes[&i];
+            start.cmp(&node.content_start_id)
+        }).ok()?;
+        Some(candidates[pos])
     }
-    pub fn find_all_parents_as_str(&self, node: &DocumentNode<C>) -> String 
+
+    /// Возвращает всех предков ноды от корня к непосредственному родителю.
+    /// Использует `parent_of`, построенный при `insert` — гарантированно
+    /// проходит всю цепочку даже при пропущенных уровнях.
+    pub fn find_all_parents_by_node(&self, node: &DocumentNode<C>) -> Vec<&DocumentNode<C>>
     {
-        let parents = self.find_all_parents(node.content_start_id, node.content_end_id, node.content_lvl);
-        let mut p = parents
-        .into_iter()
-        .map(|p| p.caption.replace("$", "")).fold(String::new(), |acc, v|
+        let Some(mut idx) = self.node_idx(node) else { return Vec::new(); };
+        let mut result = Vec::new();
+        while let Some(&parent_idx) = self.parent_of.get(&idx)
         {
-            if acc.is_empty()
-            {
-                v
-            }
-            else
-            {
-                acc + "->" + &v
-            }
-        });
-        if p.is_empty()
-        {
-            p.push_str(&node.caption().replace("$", ""));
+            result.push(&self.nodes[parent_idx]);
+            idx = parent_idx;
         }
-        else 
-        {
-            p.push_str(&["->", &node.caption().replace("$", "")].concat());
-        }
-        p
-        
+        // parent_of даёт путь от ноды к корню → переворачиваем
+        result.reverse();
+        result
+    }
+
+    pub fn find_all_parents_as_str(&self, node: &DocumentNode<C>) -> String
+    {
+        let parents = self.find_all_parents_by_node(node);
+        let mut parts: Vec<String> = parents
+            .iter()
+            .map(|p| p.caption.replace("$", ""))
+            .collect();
+        parts.push(node.caption().replace("$", ""));
+        parts.join("->")
     }
     
     pub fn get_children(&self, node_idx: usize) -> &[usize] {

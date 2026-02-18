@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 use qdrant_client::qdrant::{
-    Condition, CreateCollectionBuilder, FieldCondition, Filter, PointId, PointStruct, ScoredPoint, SearchPoints, SearchPointsBuilder, UpdateStatus, UpsertPointsBuilder, Value, WithPayloadSelector
+    Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, FieldCondition, FieldType, Filter, PointId, PointStruct, ScrollPointsBuilder, ScoredPoint, SearchPoints, SearchPointsBuilder, UpdateStatus, UpsertPointsBuilder, Value, WithPayloadSelector
 };
 use qdrant_client::Qdrant;
 use crate::error::{Result, Error};
@@ -18,21 +18,39 @@ pub struct QdrantPoint
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd)]
-pub struct QdrantPayload 
+pub struct QdrantPayload
 {
-    pub text: String,                // Оригинальный текст чанка
-    //pub embedding_text: String,      // Текст, который был передан в модель
-    pub document_uri: String,        // URI исходного документа
-    pub document_hash: String,        // URI исходного документа
-    pub document_title: String, // Заголовки документа
-    pub document_number: String,    // Номер документа
-    pub document_sign_date: String, // Дата подписания документа
-    pub path: String, // Полный путь
-    pub chunk_index: usize,          // Индекс чанка в документе
+    pub text: String,
+    pub document_uri: String,
+    pub publication_url: String,
+    pub document_hash: String,
+    pub document_title: String,
+    pub document_number: String,
+    /// Дата подписания в формате YYYYMMDD (u64) — для range-фильтров.
+    pub document_sign_date: u64,
+    pub path: String,
+    pub chunk_index: usize,
+    /// Хэши связанных документов (ссылки из текста чанка).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links_hashes: Vec<String>,
+}
+
+impl QdrantPayload
+{
+    /// Дата подписания в читаемом виде "ДД.ММ.ГГГГ" для передачи в LLM-контекст.
+    /// Внутри хранится как u64 YYYYMMDD для range-фильтров Qdrant.
+    pub fn sign_date_as_str(&self) -> String
+    {
+        let d = self.document_sign_date;
+        let year  = d / 10_000;
+        let month = (d % 10_000) / 100;
+        let day   = d % 100;
+        format!("{:02}.{:02}.{}", day, month, year)
+    }
 }
 
 #[derive(Debug, Clone)]
-pub struct QdrantConfig 
+pub struct QdrantConfig
 {
     pub url: String,
     pub collection_name: String,
@@ -117,12 +135,37 @@ impl QdrantManager
             
             
             info!("Created collection: {}", self.config.collection_name);
-        } 
-        else 
+
+            // Создаём payload-индексы для полей, используемых в фильтрах.
+            // Keyword-индекс даёт O(log n) вместо full-scan при фильтрации.
+            let keyword_fields = ["document_hash", "document_number"];
+            for field in keyword_fields
+            {
+                let _ = self.client.create_field_index(
+                    CreateFieldIndexCollectionBuilder::new(
+                        &self.config.collection_name,
+                        field,
+                        FieldType::Keyword,
+                    ).build()
+                ).await
+                .inspect_err(|e| warn!("Failed to create keyword index for '{}': {}", field, e));
+            }
+
+            // Integer-индекс для range-фильтра по дате.
+            let _ = self.client.create_field_index(
+                CreateFieldIndexCollectionBuilder::new(
+                    &self.config.collection_name,
+                    "document_sign_date",
+                    FieldType::Integer,
+                ).build()
+            ).await
+            .inspect_err(|e| warn!("Failed to create integer index for 'document_sign_date': {}", e));
+        }
+        else
         {
             warn!("Collection already exists: {}", self.config.collection_name);
         }
-        
+
         Ok(())
     }
     
@@ -292,21 +335,28 @@ impl QdrantManager
     {
         let id = Uuid::now_v7().to_string();
         
-        Ok(QdrantPoint 
+        // JoinDate → "YYYYMMDD", парсим в u64 для range-фильтров в Qdrant.
+        let sign_date_u64: u64 = chunk.sign_date
+            .format(utilites::DateFormat::JoinDate)
+            .parse()
+            .unwrap_or(0);
+        Ok(QdrantPoint
+        {
+            id,
+            vector,
+            payload: QdrantPayload
             {
-                id,
-                vector,
-                payload: QdrantPayload 
-                {
-                    text: chunk.content,
-                    document_uri: chunk.document_url,
-                    document_hash: chunk.hash,
-                    document_title: chunk.title,
-                    document_number: chunk.number,
-                    document_sign_date: chunk.sign_date.to_string(),
-                    path: chunk.path,
-                    chunk_index: chunk.meta.and_then(|m| Some(m.chunk_index)).unwrap_or(0),
-                },
+                text: chunk.content,
+                document_uri: chunk.document_url,
+                publication_url: chunk.publication_url,
+                document_hash: chunk.hash,
+                document_title: chunk.title,
+                document_number: chunk.number,
+                document_sign_date: sign_date_u64,
+                path: chunk.path,
+                chunk_index: chunk.meta.map(|m| m.chunk_index).unwrap_or(0),
+                links_hashes: chunk.links_hashes.unwrap_or_default(),
+            },
         })
     }
     
@@ -435,7 +485,7 @@ impl QdrantManager
         }).collect();
         // 2. Поиск по ключевым словам (если нужно)
         // Можно использовать BM25 или другие методы
-        let keyword_results = self.keyword_search(query, limit * 2, retriver_model.dimension(),filter).await?;
+        let keyword_results = self.keyword_search(query, limit * 2, filter).await?;
         
         // 3. Объединяем результаты
         let combined = Self::combine_results(
@@ -449,71 +499,68 @@ impl QdrantManager
         Ok(combined)
     }
     
-    /// Поиск по ключевым словам (используя фильтры Qdrant)
-    async fn keyword_search<'model>(
+    /// Поиск по ключевым словам через Qdrant scroll (без вектора).
+    /// Использует text-match по полю `text` + дополнительные фильтры.
+    async fn keyword_search(
         &self,
         query: &str,
         limit: usize,
-        dimension: usize,
         filter: Option<SearchFilter>,
-    ) -> Result<Vec<SearchResult>> {
-        // Извлекаем ключевые слова из запроса
+    ) -> Result<Vec<SearchResult>>
+    {
         let keywords = Self::extract_keywords(query);
-        
-        // Создаем условия для поиска
-        let mut conditions = Vec::new();
-        for keyword in keywords {
-            conditions.push(Condition {
+
+        // Text-match условия (should = OR между словами)
+        let keyword_conditions: Vec<Condition> = keywords
+            .into_iter()
+            .map(|kw| Condition
+            {
                 condition_one_of: Some(
                     qdrant_client::qdrant::condition::ConditionOneOf::Field(
-                        FieldCondition {
+                        FieldCondition
+                        {
                             key: "text".to_string(),
-                            r#match: Some(qdrant_client::qdrant::Match {
+                            r#match: Some(qdrant_client::qdrant::Match
+                            {
                                 match_value: Some(
-                                    qdrant_client::qdrant::r#match::MatchValue::Text(keyword)
+                                    qdrant_client::qdrant::r#match::MatchValue::Text(kw)
                                 ),
                             }),
                             ..Default::default()
                         }
                     )
                 ),
-            });
-        }
-        
-        // Если есть дополнительные фильтры
-        let mut all_conditions = conditions;
-        if let Some(filter) = filter 
+            })
+            .collect();
+
+        if keyword_conditions.is_empty()
         {
-            all_conditions.extend(filter.conditions);
+            return Ok(Vec::new());
         }
-        
-        // Выполняем поиск
-        let search_request = SearchPoints 
+
+        let mut scroll_filter = Filter
         {
-            collection_name: self.config.collection_name.clone(),
-            vector: vec![0.0; dimension], // Пустой вектор для keyword search
-            filter: Some(Filter 
-            {
-                should: all_conditions,
-                ..Default::default()
-            }),
-            limit: limit as u64,
-            with_payload: Some(WithPayloadSelector 
-            {
-                selector_options: Some(
-                    qdrant_client::qdrant::with_payload_selector::SelectorOptions::Enable(true)
-                ),
-            }),
+            should: keyword_conditions,
             ..Default::default()
         };
-        
-        let results = self.client
-            .search_points(search_request)
-            .await?;
-        
-        Ok(results.result
+
+        // Дополнительные must-фильтры (например, по document_hash)
+        if let Some(f) = filter
+        {
+            scroll_filter.must = f.conditions;
+        }
+
+        let scroll = ScrollPointsBuilder::new(&self.config.collection_name)
+            .filter(scroll_filter)
+            .limit(limit as u32)
+            .with_payload(true)
+            .build();
+
+        let response = self.client.scroll(scroll).await?;
+
+        Ok(response.result
             .into_iter()
-            .map(SearchResult::from_scored_point)
+            .map(SearchResult::from_retrieved_point)
             .collect())
     }
     
@@ -724,41 +771,56 @@ impl AsRef<str> for SearchResult
 
 impl SearchResult 
 {
-    fn from_scored_point(sp: ScoredPoint) -> Self 
+    fn parse_payload(raw: std::collections::HashMap<String, Value>) -> QdrantPayload
     {
-        let payload_value = sp.payload;
-        let payload: QdrantPayload = serde_json::from_value(
-            serde_json::to_value(payload_value).unwrap()
-        ).unwrap_or_else(|_| QdrantPayload 
+        serde_json::from_value(
+            serde_json::to_value(raw).unwrap()
+        ).unwrap_or_else(|_| QdrantPayload
         {
             text: String::new(),
             document_uri: String::new(),
+            publication_url: String::new(),
             document_title: String::new(),
             document_hash: String::new(),
             path: String::new(),
             chunk_index: 0,
             document_number: String::new(),
-            document_sign_date: String::new()
-            
-        });
-        let point_id = sp.id.and_then(|a| a.point_id_options.and_then(|p|
+            document_sign_date: 0,
+            links_hashes: Vec::new(),
+        })
+    }
+
+    fn parse_point_id(id: Option<PointId>) -> String
+    {
+        id.and_then(|a| a.point_id_options.map(|p| match p
         {
-            let res = match p
-            {
-                qdrant_client::qdrant::point_id::PointIdOptions::Num(n) => n.to_string(),
-                qdrant_client::qdrant::point_id::PointIdOptions::Uuid(uid) => uid
-            };
-            Some(res)
-        }));
-        Self 
+            qdrant_client::qdrant::point_id::PointIdOptions::Num(n) => n.to_string(),
+            qdrant_client::qdrant::point_id::PointIdOptions::Uuid(uid) => uid,
+        }))
+        .unwrap_or_default()
+    }
+
+    fn from_scored_point(sp: ScoredPoint) -> Self
+    {
+        Self
         {
-            id: point_id.unwrap_or(String::new()),
+            id: Self::parse_point_id(sp.id),
             score: sp.score,
-            payload,
+            payload: Self::parse_payload(sp.payload),
+        }
+    }
+
+    fn from_retrieved_point(rp: qdrant_client::qdrant::RetrievedPoint) -> Self
+    {
+        Self
+        {
+            id: Self::parse_point_id(rp.id),
+            score: 0.0,
+            payload: Self::parse_payload(rp.payload),
         }
     }
 }
-
+//TODO сделать вывод даты как строки для контекста!
 impl ToString for SearchResult
 {
     fn to_string(&self) -> String 
@@ -774,7 +836,7 @@ impl ToString for SearchResult
             ---------------\n",
             &self.payload.document_uri,
             &self.payload.document_number,
-            &self.payload.document_sign_date,
+            &self.payload.sign_date_as_str(),
             &self.payload.document_title,
             &self.payload.path,
             &self.payload.text

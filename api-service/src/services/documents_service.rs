@@ -41,7 +41,7 @@ impl DocumentsService
         let date_str = date.format(utilites::DateFormat::DotDate);
         let converter = SystemaActualConverter{};
         let result = 
-            SystemaClient::get_document(date, number, converter).await?;
+            SystemaClient::get_document_tree(date, number, converter).await?;
         let (sender, mut receiver) = unbounded_channel();
         let sse_service = self.sse_service.clone();
         tokio::spawn(async move 

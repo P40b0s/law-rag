@@ -36,7 +36,7 @@ impl From<RerankResult<SearchResult>> for QdrantContext
             document_hash: db_object.payload.document_hash.clone(),
             document_title: db_object.payload.document_title.clone(),
             document_number: db_object.payload.document_number.clone(),
-            document_sign_date: db_object.payload.document_sign_date.clone(),
+            document_sign_date: db_object.payload.sign_date_as_str(),
         }
     }
 }

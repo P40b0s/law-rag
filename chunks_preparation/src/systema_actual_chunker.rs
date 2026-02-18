@@ -1,92 +1,159 @@
-use std::fmt::Debug;
-
 use rag_core::{Chunk, ChunkMeta, Encoder, ServiceStatus};
-use systema_client::DocumentNodes;
+use systema_client::{DocumentTree, TreeNode};
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{debug, info, warn};
-use utilites::Date;
 
-use crate::{chunker::Chunker, splitter::Splitter};
+use crate::{chunker::Chunker, simple_chunker::split_node_text};
 
-pub struct SystemaActualChunker<C: ToString + Debug + AsRef<str>>(DocumentNodes<C>);
+/// Чанкер на основе `DocumentTree`.
+///
+/// Иерархия строится через `Content.id` (вида "a3_c8_j1") — без хрупкого
+/// поиска по диапазонам абзацев.  Каждый смысловой узел дерева превращается
+/// в один или несколько чанков (при превышении лимита токенов).
+pub struct SystemaActualChunker(DocumentTree);
 
-impl<C: ToString + Debug + AsRef<str>> SystemaActualChunker<C>
+impl SystemaActualChunker
 {
-    pub fn new(nodes: DocumentNodes<C>) -> Self
+    pub fn new(tree: DocumentTree) -> Self
     {
-        Self(nodes)
+        Self(tree)
     }
 }
 
-impl<C: ToString + Debug + AsRef<str> + Sync> Chunker for SystemaActualChunker<C>
+impl Chunker for SystemaActualChunker
 {
-    async fn get_chunks<'m, E: Encoder + Sync + Send>(&self, encoder: &E, sender: UnboundedSender<ServiceStatus>) -> anyhow::Result<Vec<Chunk>>
+    async fn get_chunks<'m, E: Encoder + Sync + Send>(
+        &self,
+        encoder: &E,
+        sender: UnboundedSender<ServiceStatus>,
+    ) -> anyhow::Result<Vec<Chunk>>
     {
         let hash = self.0.hash();
-        let count = self.0.node_count();
-        //если будем разбивать на буольшее количество чанков чем один абзац - один чанк то необходимо поправить
-        let mut chunks = Vec::with_capacity(count);
-        info!("Ноды документы были успешно получены: {} шт.", count);
-        let chunker = Splitter::new(encoder).await?;
-        let mut current = 1;
-        let mut node_index = 0;
-        for node in &self.0
+        let mut chunks = Vec::new();
+        let mut chunk_num = 1;
+
+        for node in self.0.iter()
         {
-            node_index += 1;
-            info!("Processing node {}/{}, current chunks: {}", node_index, count, current - 1);
+            let content = node.text.trim();
 
-            //бьем текст на куски тут и для каждого создаем чанку
-            let content = node.converted_content().as_ref();
-            info!("Node {}: content length {} bytes", node_index, content.len());
-
-            let splitted = chunker.split_text(content).await?;
-
-            info!("Node {}: split into {} chunks", node_index, splitted.len());
-
-            for (text_idx, text) in splitted.into_iter().enumerate()
+            // Пустые узлы пропускаем
+            if content.is_empty()
             {
-                debug!("Creating chunk {} from node {} (text_idx: {})", current, node_index, text_idx);
+                continue;
+            }
 
-                debug!("Finding parents path for chunk {}", current);
-                let path_start = std::time::Instant::now();
-                let path = self.0.find_all_parents_as_str(&node);
-                let path_duration = path_start.elapsed();
-                debug!("Parents path found: {} chars in {:?}", path.len(), path_duration);
+            // Заголовочные узлы без смысловой нагрузки пропускаем
+            if is_header_node(node)
+            {
+                continue;
+            }
 
-                if path_duration.as_secs() > 5 {
-                    warn!("Slow find_all_parents_as_str for chunk {}: took {:?}", current, path_duration);
+            let path = self.0.path_str(node);
+            let ancestors = self.0.ancestors(node);
+            let context_prefix = context_prefix_from_ancestors(&ancestors);
+
+            let sub_chunks = split_node_text(content, encoder)?;
+
+            for (idx, (text, token_count)) in sub_chunks.into_iter().enumerate()
+            {
+                if text.ends_with(":")
+                {
+                    continue;
                 }
+                let chunk_content = match &context_prefix
+                {
+                    Some(prefix) => format!("{}\n{}", prefix, text),
+                    None => text,
+                };
 
-                let chunk = Chunk
+                chunks.push(Chunk
                 {
                     publication_url: self.0.publication_url().to_owned(),
-                    document_url: format!("http://actual.pravo.gov.ru/list.html#hash={}", self.0.hash()),
+                    document_url: format!("http://actual.pravo.gov.ru/list.html#hash={}", hash),
                     title: self.0.title().to_owned(),
                     number: self.0.number().to_owned(),
                     sign_date: self.0.sign_date().to_owned(),
-                    hash: self.0.hash().to_owned(),
-                    path,
-                    links_hashes: node.links_hashes().cloned(),
-                    content: text.content,
+                    hash: hash.to_owned(),
+                    path: path.clone(),
+                    links_hashes: node.links.clone(),
+                    content: chunk_content,
                     embeddings: None,
                     meta: Some(ChunkMeta
                     {
-                        chunk_index: text.chunk_index,
-                        token_count: text.token_count
-                    })
-                };
+                        chunk_index: idx,
+                        token_count,
+                    }),
+                });
 
-                debug!("Sending status for chunk {}", current);
-                let _ = sender.send(ServiceStatus::process_chunk(&hash, current, count));
-
-                debug!("Pushing chunk {} to vector", current);
-                chunks.push(chunk);
-                current +=1;
-                debug!("chunk {}/{} created", current, count);
+                let _ = sender.send(ServiceStatus::process_chunk(hash, chunk_num, self.0.node_count()));
+                chunk_num += 1;
             }
-            info!("Node {}/{} completed, total chunks created: {}", node_index, count, current - 1);
         }
-        info!("All nodes processed successfully, total chunks: {}", chunks.len());
+
         Ok(chunks)
+    }
+}
+
+/// Заголовочный узел — структурный заголовок без смысловой нагрузки.
+fn is_header_node(node: &TreeNode) -> bool
+{
+    let ct = node.content_type.to_lowercase();
+    if matches!(ct.as_str(), "статья" | "раздел" | "глава" | "подраздел")
+    {
+        return true;
+    }
+    let content = node.text.trim();
+    let header_prefixes = ["Статья ", "Раздел ", "Глава ", "Подраздел ", "Параграф "];
+    content.len() < 300 && header_prefixes.iter().any(|p| content.starts_with(p))
+}
+
+/// Если ближайший предок заканчивается на «:» — возвращаем его текст
+/// как контекстный префикс, чтобы не терять контекст перечисления.
+fn context_prefix_from_ancestors(ancestors: &[&TreeNode]) -> Option<String>
+{
+    for ancestor in ancestors.iter().rev()
+    {
+        let text = ancestor.text.trim();
+        if text.ends_with(':')
+        {
+            return Some(text.to_owned());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests
+{
+    use std::sync::Arc;
+    use tracing::debug;
+    use utilites::Date;
+    use embedding::{EmbeddingConfiguration, RetriverModel};
+    use rag_core::Converter;
+    use crate::{chunker::Chunker, systema_actual_converter::SystemaActualConverter};
+    use super::SystemaActualChunker;
+
+    #[tokio::test]
+    async fn test_tree_chunker()
+    {
+        rag_core::init();
+        let converter = SystemaActualConverter {};
+        let result = systema_client::SystemaClient::get_document_tree(
+            Date::new_date(07, 06, 2025),
+            "127-ФЗ",
+            converter,
+        )
+        .await
+        .unwrap();
+
+        let emb_cfg = Arc::new(EmbeddingConfiguration::default());
+        let model = RetriverModel::new(emb_cfg).await.unwrap();
+        let chunker = SystemaActualChunker::new(result);
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let chunks = chunker.get_chunks(&model, sender).await.unwrap();
+        debug!("TreeChunker создал {} чанков", chunks.len());
+        for chunk in &chunks
+        {
+            debug!("  path={}\n  content={}\n", chunk.path, chunk.content);
+        }
     }
 }

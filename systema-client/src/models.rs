@@ -264,7 +264,7 @@ pub struct Contents
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Content
 {
-    /// id a1, a1_j1 хз что это
+    /// id a1, a1_j1 уникальный идентификатор
     pub id: String,
     ///начало текущего блока `p8`
     #[serde(rename="np")]

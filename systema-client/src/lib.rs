@@ -5,6 +5,7 @@ mod encoding;
 mod models;
 mod search_attributes;
 mod document;
+mod document_tree;
 mod html_to_markdown;
 pub use error::Error;
 mod logger;
@@ -15,6 +16,7 @@ use scraper::{Selector};
 use tracing::{debug, info};
 use utilites::Date;
 pub use document::{DocumentNode, DocumentNodes};
+pub use document_tree::{DocumentTree, TreeNode};
 pub use crate::models::SystemaDocumentCard;
 use rag_core::Converter;
 pub struct SystemaClient
@@ -90,6 +92,14 @@ impl SystemaClient
 
     }
 
+    /// Строит `DocumentTree` — дерево документа
+    pub async fn get_document_tree<CONV>(sign_date: Date, number: &str, converter: CONV) -> Result<DocumentTree>
+    where CONV: Converter<String>
+    {
+        let response = ActualRedactionsClient::get_document(sign_date, number).await?;
+        Ok(DocumentTree::build(response, converter))
+    }
+
     pub async fn get_documents_list(&self, page: usize) -> Result<Vec<SystemaDocumentCard>>
     {
         let documents = ActualRedactionsClient::get_documents(page).await?;
@@ -100,7 +110,7 @@ impl SystemaClient
 mod tests
 {
     use rag_core::Converter;
-    use tracing::info;
+    use tracing::{debug, info};
     use utilites::Date;
     use crate::{logger};
 
@@ -126,13 +136,14 @@ mod tests
         let validation = doc.validate();
         println!("Результат валидации:");
         validation.print();
-        for n in doc
+        for n in &doc
         {
             if let Some(links) =  n.links_hashes()
             {
                 info!("Обнаружены хеши ссылок: {:?}", links);
             }
         }
+        debug!("{:?}", doc);
         //let d = serde_json::to_string_pretty(&doc).unwrap();
         //tokio::fs::write("test_doc.json", d).await;
         //info!("{:#?}", doc);

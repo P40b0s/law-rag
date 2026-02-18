@@ -1,7 +1,7 @@
 use rag_core::Converter;
 use serde::{Deserialize, Serialize};
 use scraper::Node;
-use tracing::info;
+use tracing::{debug, info};
 use utilites::Date;
 pub struct SystemaActualConverter;
 pub enum Actions
@@ -49,7 +49,7 @@ impl Converter<String> for SystemaActualConverter
                         //     <span class="cmd" cmdprm="gohash=b113c2e08341853ef53a8dad4585b513d96f85e0f3d0d246a25ecf52e40608db goparaid=0 goback=0">
                         // }
                     }
-                    info!("found element: {:#?}", e);
+                    //debug!("found element: {:#?}", e);
                 }
                 Node::Text(t) =>
                 {
@@ -57,13 +57,13 @@ impl Converter<String> for SystemaActualConverter
                     {
                         Actions::Superscript =>
                         {
-                            info!("found text: {:#?}", t);
+                            debug!("found text: {:#?}", t);
                             result_text.push_str(&["^", t].concat());
                             actions = Actions::None;
                         }
                         Actions::Subscript =>
                         {
-                            info!("found text: {:#?}", t);
+                            debug!("found text: {:#?}", t);
                             result_text.push_str(&["_", t].concat());
                             actions = Actions::None;
                         }
@@ -77,7 +77,7 @@ impl Converter<String> for SystemaActualConverter
                 _ => {}
             }
         }
-        info!("result text: {:#?}", result_text);
+        debug!("result text: {:#?}", result_text);
         result_text
     }
 }
@@ -102,18 +102,34 @@ mod tests
     {
         rag_core::init();
         let converter = SystemaActualConverter{};
-        let result = 
-            systema_client::SystemaClient::get_document(
-                Date::new_date(31, 07, 2025),
-                "287-ФЗ", converter).await.unwrap();
+        let result = systema_client::SystemaClient::get_document_tree(
+            Date::new_date(07, 06, 2025),
+            "127-ФЗ",
+            converter,
+        )
+        .await
+        .unwrap();
+        debug!("{:?}", &result);
         let emb_cfg = Arc::new(EmbeddingConfiguration::default());
         let model = RetriverModel::new(emb_cfg).await.unwrap();
         let chunker = systema_actual_chunker::SystemaActualChunker::new(result);
         let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let chunks = chunker.get_chunks(&model, sender).await.unwrap();
-        for chunk in &chunks
-        {
-            debug!("chunk created: {:#?}", chunk);
-        }
+        // for chunk in &chunks
+        // {
+        //     debug!("chunk created: {:#?}", chunk);
+        // }
+    }
+
+     #[tokio::test]
+    async fn test_nodes()
+    {
+        rag_core::init();
+        let converter = SystemaActualConverter{};
+        let result = 
+            systema_client::SystemaClient::get_document(
+                Date::new_date(31, 07, 2025),
+                "287-ФЗ", converter).await.unwrap();
+        debug!("{:?}", &result);
     }
 }

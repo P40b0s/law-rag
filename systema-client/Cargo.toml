@@ -16,6 +16,7 @@ utilites.workspace = true
 encoding.workspace = true
 regex.workspace = true
 rag-core = {path = "../rag-core"}
+rangemap.workspace = true
 
 [dev-dependencies]
 rand.workspace = true
