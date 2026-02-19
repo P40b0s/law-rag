@@ -1,12 +1,15 @@
-use std::sync::Arc;
-use anyhow::anyhow;
+
+use std::{collections::{self, HashMap}, fmt::Display, ops::Deref, sync::{Arc, atomic::AtomicBool}};
+use anyhow::{Context, anyhow};
 use database::{QdrantManager, SearchResult};
-use embedding::{Generator, Model};
-use rag_core::{Chunk, Embedder, EmbeddingConfiguration, Encoder, QdrantConfiguration, RerankResult, Reranker, ServiceStatus};
+use embedding::{BgeReranker, Generator, GeneratorLlama1b, GeneratorLlama8b, Model, RetriverModel};
+use rag_core::{Chunk, Embedder, EmbeddingConfiguration, Encoder, QdrantConfiguration, RerankResult, ServiceStatus};
 use serde::Serialize;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender}};
 use tracing::{debug, error, info, warn};
-use crate::{Error, working_models::WorkingModels};
+use utilites::Date;
+pub type LlmModel = GeneratorLlama1b;
+use crate::{Collection, Error};
 
 #[derive(Debug, Serialize)]
 pub struct ModelsState
@@ -16,36 +19,49 @@ pub struct ModelsState
     system_prompt: String,
     model_size: usize
 }
-
-
-pub struct Service
+pub struct Service<RET: Encoder + Embedder + Send + Sync>
 {
-    models: WorkingModels,
+    embedding_config: Arc<EmbeddingConfiguration>,
+    retriver: RwLock<RET>,
+    reranker: RwLock<BgeReranker>,
     qdrant_manager: QdrantManager,
+    generator: RwLock<LlmModel>,
+
 }
 
-impl Service
+impl<RET: Encoder + Embedder + Send + Sync> Service<RET>
 {
     pub async fn new(emb_cfg: Arc<EmbeddingConfiguration>, qdrant_cfg: Arc<QdrantConfiguration>) -> Result<Self, Error>
     {
-        let models = WorkingModels::new(emb_cfg.clone()).await?;
+        let generator = LlmModel::load(Arc::clone(&emb_cfg))
+            .inspect_err(|e| error!("Error when loading generator `{}`", e))
+            .map_err(|e| Error::ModelLoadError { model: "generator".to_owned(), source: e })?;
+        let retriver = RetriverModel::new(Arc::clone(&emb_cfg)).await
+            .inspect_err(|e| error!("Error when loading retriver model `{}`", e))
+            .map_err(|e| Error::ModelLoadError { model: "retriver".to_owned(), source: e })?;
+        let reranker = BgeReranker::new(Arc::clone(&emb_cfg)).await
+            .inspect_err(|e| error!("Error when loading reranker model `{}`", e))
+            .map_err(|e| Error::ModelLoadError { model: "reranker".to_owned(), source: e })?;
         let qdrant_manager = QdrantManager::new(Arc::clone(&qdrant_cfg), Arc::clone(&emb_cfg))?;
         let slf = Self
         {
+            embedding_config: emb_cfg,
             qdrant_manager,
-            models
+            retriver: RwLock::new(retriver),
+            reranker: RwLock::new(reranker),
+            generator: RwLock::new(generator),
         };
        Ok(slf)
     }
     pub async fn models_state(&self) -> ModelsState
     {
-        let retriver_lock = self.models.get_retriver().await;
+        let retriver_lock = self.retriver.read().await;
         let retriver = retriver_lock.model_is_loaded();
         drop(retriver_lock);
-        let reranker_lock = self.models.get_reranker().await;
+        let reranker_lock = self.reranker.read().await;
         let reranker = reranker_lock.model_is_loaded();
         drop(reranker_lock);
-        let gen_lock = self.models.get_generator().await;
+        let gen_lock = self.generator.read().await;
         let generator = gen_lock.model_is_loaded();
         let system_prompt = gen_lock.get_system_prompt().to_owned();
         let model_size = gen_lock.get_size_in_bytes();
@@ -58,13 +74,17 @@ impl Service
         }
     }
 
-    pub async fn get_encoder(&self) -> tokio::sync::RwLockReadGuard<'_, impl Encoder>
+    pub async fn get_retriver(&self) -> tokio::sync::RwLockReadGuard<'_, RetriverModel>
     {
-        self.models.get_encoder().await
+        self.retriver.read().await
+    }
+    pub async fn get_retriver_mut(&self) -> tokio::sync::RwLockWriteGuard<'_, RetriverModel>
+    {
+        self.retriver.write().await
     }
     pub async fn load_generator_model(&self) -> Result<ModelsState, Error>
     {
-        let mut gen_lock = self.models.get_generator_mut().await;
+        let mut gen_lock = self.generator.write().await;
         if gen_lock.model_is_loaded()
         {
             warn!("Generator model already loaded");
@@ -93,7 +113,8 @@ impl Service
     //uses separate OS thread to avoid blocking tokio runtime with CPU-bound embedding generation
     pub async fn add_chunks_to_qdrant(self: Arc<Self>, chunks: Vec<Chunk>, collection_name: &str) -> Result<UnboundedReceiver<ServiceStatus>, Error>
     {
-        let service = Arc::clone(&self);
+        let drop_service = self;
+        let service = Arc::clone(&drop_service);
         let _ = service.check_load_embedding_models().await?;
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         let handle = tokio::runtime::Handle::current();
@@ -102,7 +123,7 @@ impl Service
         {
             handle.block_on(async move
             {
-                let retriver = service.models.get_retriver().await;
+                let retriver = service.retriver.read().await;
                 let check_collection = service.qdrant_manager.ensure_collection(&collection_name).await;
                 if let Err(e) = check_collection
                 {
@@ -128,8 +149,8 @@ impl Service
 
     async fn check_load_embedding_models(&self) -> Result<(), Error>
     {
-        let reranker = self.models.get_reranker().await;
-        let retriver = self.models.get_retriver().await;
+        let reranker = self.reranker.read().await;
+        let retriver = self.retriver.read().await;
         if !reranker.model_is_loaded()
         {
             return Err(Error::RerankerModelNotLoad)
@@ -189,8 +210,8 @@ impl Service
         {
             handle.block_on(async move
             {
-                let retriver = service.models.get_retriver().await;
-                let reranker = service.models.get_reranker().await;
+                let retriver = service.retriver.read().await;
+                let reranker = service.reranker.read().await;
 
                 // Эмбеддинг запроса генерируем один раз для всех коллекций.
                 let query_embeddings = retriver.generate_embeddings(&query).await
@@ -326,10 +347,10 @@ impl Service
     pub async fn load_embedding_models(&self) -> Result<ModelsState, Error>
     {
         {
-            let mut lock_retriver = self.models.get_retriver_mut().await;
+            let mut lock_retriver = self.retriver.write().await;
             let _ = lock_retriver.load_model().await
                 .map_err(|e| Error::ModelLoadError { model: "retriver".to_owned(), source: e })?;
-            let mut lock_reranker = self.models.get_reranker_mut().await;
+            let mut lock_reranker = self.reranker.write().await;
             let _ = lock_reranker.load_model().await
                 .map_err(|e| Error::ModelLoadError { model: "reranker".to_owned(), source: e })?;
         }
@@ -338,7 +359,7 @@ impl Service
     }
     pub async fn unload_generator_model(&self) -> Result<ModelsState, Error>
     {
-        let mut lock = self.models.get_generator_mut().await;
+        let mut lock = self.generator.write().await;
         lock.unload_model();
         drop(lock);
         let state = self.models_state().await;
@@ -346,10 +367,10 @@ impl Service
     }
     pub async fn unload_embedding_models(&self) -> Result<ModelsState, Error>
     {
-        let mut lock = self.models.get_retriver_mut().await;
+        let mut lock = self.retriver.write().await;
         lock.unload_model();
         drop(lock);
-        let mut lock = self.models.get_reranker_mut().await;
+        let mut lock = self.reranker.write().await;
         lock.unload_model();
         drop(lock);
         let state = self.models_state().await;
@@ -374,7 +395,7 @@ impl Service
     pub async fn genereate_response(self: Arc<Self>, query: &str, context: Vec<RerankResult<SearchResult>>) -> Result<UnboundedReceiver<String>, Error>
     {
         let service = self;
-        let generator = service.models.get_generator().await;
+        let generator = service.generator.read().await;
         if !generator.model_is_loaded()
         {
             return Err(Error::GeneratorModelNotLoad);
@@ -387,7 +408,7 @@ impl Service
         {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                let mut generator = task_service.models.get_generator_mut().await;
+                let mut generator = task_service.generator.write().await;
                 let result = generator.prompt(&query, context.as_slice(), sender);
                 debug!("{:?}", result);
              });
@@ -402,7 +423,9 @@ mod tests
     use std::sync::Arc;
     use rag_core::{EmbeddingConfiguration, QdrantConfiguration};
     use tracing::info;
-    use crate::logger;
+    use utilites::Date;
+
+    use crate::{logger};
 
     //  #[tokio::test]
     // async fn service()
@@ -444,6 +467,8 @@ mod tests
     #[tokio::test]
     async fn search_and_gen()
     {
+        use embedding::GeneratorLlama1b; // or GeneratorLlama8b
+
         logger::init();
         let emb_cfg = Arc::new(EmbeddingConfiguration::default());
         let qd_cfg = Arc::new(QdrantConfiguration::default());

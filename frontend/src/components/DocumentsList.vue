@@ -19,12 +19,12 @@
   n-card(title="Список документов" :bordered="false")
     template(#header-extra)
       n-space(align="center")
-        n-text(depth="3") Всего: {{ totalDocuments }}
+        n-text(depth="3") Всего: {{ totalCount }}
         n-button(
           type="primary"
           size="small"
-          @click="loadDocuments"
-          :loading="isLoading"
+          @click="handleLoadDocuments"
+          :loading="documentsLoading"
         )
           template(#icon)
             n-icon(:component="RefreshOutline")
@@ -62,7 +62,7 @@
       n-data-table(
         :columns="columns"
         :data="filteredDocuments"
-        :loading="isLoading"
+        :loading="documentsLoading"
         :pagination="pagination"
         :row-key="(row) => row.document_hash"
         :bordered="false"
@@ -110,7 +110,6 @@ import {
   HelpCircleOutline,
   AddOutline
 } from '@vicons/ionicons5'
-import { http_service } from '@/services/http_service/http_service'
 import { notify_service } from '@/services/notification_service'
 import type { Document, DocumentStatus } from '@/types/document'
 import { type ServiceStatus } from '@/types/service_status'
@@ -121,18 +120,17 @@ import DocumentAddForm from './DocumentAddForm.vue'
 import useModelState from '@/composables/useModelState'
 import useCollections from '@/composables/useCollections'
 import useEmbeddings from '@/composables/useEmbeddings'
+import useDocuments from '@/composables/useDocuments'
 
 const emitter = inject<Emitter<Events>>('emitter') as Emitter<Events>;
 const { getCollectionName, collectionOptions, getCollectionById} = useCollections()
+const { documents, totalCount, loading: documentsLoading, loadDocuments, deleteDocument, addOrUpdateDocument, updateDocumentStatus } = useDocuments()
 // Reactive state
-const documents = ref<Document[]>([])
-const isLoading = ref(false)
 const searchQuery = ref('')
 const statusFilter = ref<DocumentStatus | null>(null)
 const collectionFilter = ref<string | null>(null)
 const currentPage = ref(1)
 const pageSize = ref(20)
-const totalDocuments = ref(0)
 const show_add_modal = ref(false);
 const {get_state} = useModelState()
 const {embedding_document} = useEmbeddings();
@@ -149,17 +147,17 @@ const statusOptions = [
 const pagination = computed<PaginationProps>(() => ({
   page: currentPage.value,
   pageSize: pageSize.value,
-  pageCount: Math.ceil(totalDocuments.value / pageSize.value),
+  pageCount: Math.ceil(totalCount.value / pageSize.value),
   showSizePicker: true,
   pageSizes: [10, 20, 30, 50],
   onChange: (page: number) => {
     currentPage.value = page
-    loadDocuments()
+    handleLoadDocuments()
   },
   onUpdatePageSize: (size: number) => {
     pageSize.value = size
     currentPage.value = 1
-    loadDocuments()
+    handleLoadDocuments()
   }
 }))
 
@@ -247,43 +245,21 @@ const handleEmbedding = async (document: Document) =>
 
 // Обработчик удаления документа
 const handleDelete = async (document: Document) => {
-  const success = await http_service.documents_service.delete_document(document.document_hash)
-  if (success) 
-  {
-    // Удаляем документ из списка
-    const index = documents.value.findIndex(d => d.document_hash === document.document_hash)
-    if (index !== -1) 
-    {
-      documents.value.splice(index, 1)
-      totalDocuments.value--
-    }
-  }
+  await deleteDocument(document.document_hash)
 }
 
 // Загрузка документов
-const loadDocuments = async () => 
+const handleLoadDocuments = async () =>
 {
-  isLoading.value = true
-  try 
+  try
   {
     const offset = (currentPage.value - 1) * pageSize.value
-    const result = await http_service.documents_service.get_documents(offset, pageSize.value)
-    const count = await http_service.documents_service.get_documents_count();
-    console.log('Documents count:', count);
-    if (result) 
-    {
-      documents.value = result
-      totalDocuments.value = count || 0
-    }
-  } 
-  catch (error) 
+    await loadDocuments(offset, pageSize.value)
+  }
+  catch (error)
   {
     console.error('Error loading documents:', error)
     notify_service.error('Ошибка загрузки', 'Не удалось загрузить список документов')
-  } 
-  finally 
-  {
-    isLoading.value = false
   }
 }
 
@@ -411,29 +387,21 @@ const columns = computed<DataTableColumns<Document>>(() => [
 ])
 
 // Обработчик добавления нового документа
-const handleDocumentAdded = (document: Document) => 
+const handleDocumentAdded = (document: Document) =>
 {
-  // Проверяем, не существует ли уже такой документ в списке
-  const existingIndex = documents.value.findIndex(d => d.document_hash === document.document_hash)
-
-  if (existingIndex !== -1) {
-    // Обновляем существующий документ
-    documents.value[existingIndex] = document
-    notify_service.info('Документ обновлен', 'Документ уже существовал в списке и был обновлен')
-  } 
-  else 
-  {
-    // Добавляем новый документ в начало списка
-    documents.value.unshift(document)
-    totalDocuments.value++
+  const isNew = !documents.value.find(d => d.document_hash === document.document_hash)
+  addOrUpdateDocument(document)
+  if (isNew) {
     notify_service.success('Документ добавлен', 'Новый документ добавлен в список')
+  } else {
+    notify_service.info('Документ обновлен', 'Документ уже существовал в списке и был обновлен')
   }
-  show_add_modal.value = false;
+  show_add_modal.value = false
 }
 
 // Загрузка документов при монтировании компонента
 onMounted(() => {
-  loadDocuments()
+  handleLoadDocuments()
   emitter.on('service_status', handleServiceStatusUpdate)
 })
 
@@ -445,17 +413,7 @@ const handleServiceStatusUpdate = (status: ServiceStatus) =>
 {
   match(status.status,
     [
-      ['Complete', (m) =>
-        {
-          // Обновляем документ в списке
-          const index = documents.value.findIndex(d => d.document_hash === status.hash)
-          if (index !== -1)
-          {
-            documents.value[index].has_embeddings = true
-            documents.value[index].status = 'Embedded'
-          }
-        }
-      ],
+      ['Complete', () => updateDocumentStatus(status.hash, 'Embedded', true)],
       ['Error', () => notify_service.error(status.message)],
       () => console.warn('service status:', status.status)
     ]

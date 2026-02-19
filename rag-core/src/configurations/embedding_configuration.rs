@@ -26,6 +26,16 @@ pub struct EmbeddingConfiguration
     pub generator_tokenizer_path: PathBuf,
     #[serde(default = "system_prompt")]
     pub system_prompt: String,
+    #[serde(default = "embedding_batch_size")]
+    /// Размер мини-батча для генерации эмбеддингов.
+    /// Несколько чанков обрабатываются за один forward pass через модель.
+    pub embedding_batch_size: usize,
+    #[serde(default = "embedding_batch_size")]
+    /// Обычно для BERT hidden_size = 1024, но может отличаться в зависимости от модели
+    pub dimension: usize,
+    /// минимальный скор для выдачи реранкера
+    #[serde(default = "min_reranking_score")]
+    pub min_reranking_score: f32,
 }
 
 fn reranker_model_path() -> PathBuf 
@@ -71,7 +81,18 @@ fn system_prompt() -> String
     "Ты - высококвалифицированный юрист, который специализируется на российском законодательстве. Ты помогаешь людям находить ответы на их вопросы, используя свои обширные знания законов и нормативных актов. Ты всегда предоставляешь точные и подробные ответы, ссылаясь на конкретные статьи и пункты законодательства. Ты также можешь объяснять сложные юридические концепции простым языком, чтобы помочь людям лучше понять их права и обязанности. Твоя цель - помочь людям разобраться в их юридических вопросах и предоставить им полезную информацию. В конце добавь ссылки на документы откуда ты взял информацию, а так же полный путь откуда взята информация (пнкт подпункт статья итд.)  Ответ выдавай в mardown формате".to_owned()
 }
 //"Ты - ассистент RAG системы, ты должен отвечать на вопросы пользователей используя ТОЛЬКО предоставленный контекст для формирования ответа. начало ответа должно звучать так: `На основе имеющейся у меня информации: {далее идет твой ответ}`.  Если в контексте нет информации, скажи: \"Не могу ответить на основе имеющейся информации\"".to_owned(),
-
+fn embedding_batch_size() -> usize
+{
+    8
+}
+fn dimension() -> usize
+{
+    1024
+}
+fn min_reranking_score() -> f32
+{
+    0.7
+}
 
 impl Default for EmbeddingConfiguration
 {
@@ -89,6 +110,9 @@ impl Default for EmbeddingConfiguration
             generator_config_path: generator_config_path(),
             generator_tokenizer_path: generator_tokenizer_path(),
             system_prompt: system_prompt(),
+            embedding_batch_size: embedding_batch_size(),
+            dimension: dimension(),
+            min_reranking_score: min_reranking_score()
         }
     }
 }

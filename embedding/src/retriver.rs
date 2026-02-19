@@ -1,10 +1,10 @@
 use std::{ops::Deref, path::{Path, PathBuf}, sync::{Arc, LazyLock, OnceLock}};
-use crate::{EmbeddingConfiguration, model::{Model, ModelName}};
+use crate::{model::{Model, ModelName}};
 use anyhow::{Context, Result, anyhow};
 use candle_core::{Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::{bert::{BertModel, Config, DTYPE}};
-use rag_core::Encoder;
+use rag_core::{Embedder, EmbeddingConfiguration, Encoder};
 use serde::{Deserialize, Serialize};
 use tokenizers::{PaddingParams, Tokenizer};
 use tracing::{debug, error, info, warn};
@@ -35,8 +35,8 @@ pub struct RetriverModel
     /// Устройство для вычислений (CPU или CUDA)
     device: Device,
     /// Конфигурация BERT модели
-    config: Config,
-    /// Настройки путей к файлам модели
+    model_config: Config,
+    /// Настройки путей к файлам модели и finetuning
     embedding_config: Arc<EmbeddingConfiguration>,
     /// Токенизатор для преобразования текста в токены
     tokenizer: Tokenizer,
@@ -73,6 +73,70 @@ impl Encoder for RetriverModel
         &self.tokenizer
     }
 }
+
+impl Embedder for RetriverModel
+{
+    fn generate_embeddings(&self, text: &str) -> impl std::future::Future<Output = anyhow::Result<Vec<f32>>> + Send
+    {
+        async move 
+        {
+            // Валидация входных данных
+            if text.is_empty() 
+            {
+                return Err(anyhow!("Cannot generate embeddings for empty text"));
+            }
+
+            let text_len = text.len();
+            info!("Generating embeddings for text of {} bytes", text_len);
+
+            // Предупреждение о слишком длинных текстах
+            if text_len > 1_000_000 
+            {  // 1MB
+                warn!("Very large text ({} bytes), this may take a long time", text_len);
+            }
+
+            let start = std::time::Instant::now();
+            let tensor = self.embed_tensor_batch(&[text]).await?;
+            info!("Tensor generation took {:?}", start.elapsed());
+            let embeddings = tensor.to_vec2()?
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow!("Empty embedding vector"))?;
+            Ok(embeddings)
+        }
+    }
+    fn generate_embeddings_batch(&self, texts: &[&str]) -> impl std::future::Future<Output = anyhow::Result<Vec<Vec<f32>>>> + Send
+    {
+        async move 
+        {
+            if texts.is_empty() 
+            {
+                return Ok(Vec::new());
+            }
+
+            info!("Generating batch embeddings for {} texts", texts.len());
+            let start = std::time::Instant::now();
+            let tensor = self.embed_tensor_batch(texts).await?;
+            let vectors = tensor.to_vec2()?;
+            info!("Batch embedding generation took {:?}, produced {} vectors of dimension {}",
+                start.elapsed(), vectors.len(), vectors.first().map(|v| v.len()).unwrap_or(0));
+            Ok(vectors)
+        }
+    }
+
+
+    fn dimension(&self) -> usize 
+    {
+        self.dimension
+    }
+
+    fn batch_size(&self) -> usize 
+    {
+        self.embedding_config.embedding_batch_size
+    }
+}
+
+
 
 
 impl RetriverModel
@@ -126,11 +190,11 @@ impl RetriverModel
 
         Ok(Self
         {
-            dimension: 1024, // Обычно для BERT hidden_size = 1024, но может отличаться в зависимости от модели
+            dimension: emb_config.dimension,
             max_tokens,
             overlap_tokens: (max_tokens / 10).min(256), // 10% от max_tokens, но не более 256
             model_name: ModelName::M3,
-            config,
+            model_config: config,
             embedding_config: emb_config,
             device,
             tokenizer,
@@ -138,76 +202,44 @@ impl RetriverModel
         })
     }
 
-    /// Генерирует вектор эмбеддингов для одного текста.
-    ///
-    /// # Аргументы
-    /// * `texts` - Слайс строк (ожидается ровно 1 элемент)
-    ///
-    /// # Возвращает
-    /// * `Ok(Vec<f32>)` - Вектор эмбеддингов (размерность = self.dimension)
-    /// * `Err` - Если произошла ошибка или количество текстов != 1
-    ///
-    /// # Примечание
-    /// Для батчевой обработки используйте `generate_embeddings_batch`.
-    pub async fn generate_embeddings(&self, texts: &[&str]) -> Result<Vec<f32>>
-    {
-        // Валидация входных данных
-        if texts.is_empty() {
-            return Err(anyhow!("Cannot generate embeddings for empty text array"));
-        }
+    // /// Генерирует вектор эмбеддингов для одного текста.
+    // ///
+    // /// # Аргументы
+    // /// * `text` - Текст для ембеддинга
+    // ///
+    // /// # Возвращает
+    // /// * `Ok(Vec<f32>)` - Вектор эмбеддингов (размерность = self.dimension)
+    // /// * `Err` - Если произошла ошибка или количество текстов != 1
+    // ///
+    // /// # Примечание
+    // /// Для батчевой обработки используйте `generate_embeddings_batch`.
+    // pub async fn generate_embeddings(&self, text: &str) -> Result<Vec<f32>>
+    // {
+    //     // Валидация входных данных
+    //     if text.is_empty() 
+    //     {
+    //         return Err(anyhow!("Cannot generate embeddings for empty text"));
+    //     }
 
-        let text_len = texts[0].len();
-        info!("Generating embeddings for text of {} bytes ({} texts in batch)", text_len, texts.len());
+    //     let text_len = text.len();
+    //     info!("Generating embeddings for text of {} bytes", text_len);
 
-        // Предупреждение о слишком длинных текстах
-        if text_len > 1_000_000 {  // 1MB
-            warn!("Very large text ({} bytes), this may take a long time", text_len);
-        }
+    //     // Предупреждение о слишком длинных текстах
+    //     if text_len > 1_000_000 
+    //     {  // 1MB
+    //         warn!("Very large text ({} bytes), this may take a long time", text_len);
+    //     }
 
-        let start = std::time::Instant::now();
-        let tensor = self.embed_tensor_batch(texts).await?;
-        info!("Tensor generation took {:?}", start.elapsed());
+    //     let start = std::time::Instant::now();
+    //     let tensor = self.embed_tensor_batch(&[text]).await?;
+    //     info!("Tensor generation took {:?}", start.elapsed());
+    //     let embeddings = tensor.to_vec2()?
+    //         .into_iter()
+    //         .next()
+    //         .ok_or_else(|| anyhow!("Empty embedding vector"))?;
+    //     Ok(embeddings)
+    // }
 
-        let mut vector = tensor.to_vec2()?;
-        debug!("emb vector len: {}", vector.len());
-
-        if vector.len() > 1
-        {
-            return Err(anyhow!("Vector Vec<Vec<f32>> is empty or bigger than 1"));
-        }
-        let first = vector.pop();
-        if let Some(first) = first
-        {
-            info!("Successfully generated embedding vector of dimension {}", first.len());
-            Ok(first)
-        }
-        else
-        {
-            return Err(anyhow!("Vector Vec<Vec<f32>> is empty or bigger than 1"));
-        }
-    }
-
-    /// Генерирует эмбеддинги для батча текстов за один forward pass.
-    ///
-    /// # Аргументы
-    /// * `texts` - Слайс строк для генерации эмбеддингов
-    ///
-    /// # Возвращает
-    /// * `Ok(Vec<Vec<f32>>)` - Вектор эмбеддингов для каждого текста
-    pub async fn generate_embeddings_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>>
-    {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        info!("Generating batch embeddings for {} texts", texts.len());
-        let start = std::time::Instant::now();
-        let tensor = self.embed_tensor_batch(texts).await?;
-        let vectors = tensor.to_vec2()?;
-        info!("Batch embedding generation took {:?}, produced {} vectors of dimension {}",
-            start.elapsed(), vectors.len(), vectors.first().map(|v| v.len()).unwrap_or(0));
-        Ok(vectors)
-    }
     /// Генерирует тензор эмбеддингов для батча текстов.
     ///
     /// # Процесс генерации:
@@ -237,7 +269,6 @@ impl RetriverModel
     {
         let start = std::time::Instant::now();
         let device = self.device();
-        let model = self.model()?;
 
         info!("Starting tokenization for {} texts", texts.len());
         let tokenize_start = std::time::Instant::now();
@@ -300,7 +331,7 @@ impl RetriverModel
 
         // Шаг 5: Прямой проход через BERT модель
         // [batch, seq_len] -> [batch, seq_len, hidden_size]
-        let embeddings = model.forward(&token_ids, &token_type_ids, Some(&attention_mask))?;
+        let embeddings = self.forward(&token_ids, &attention_mask, &token_type_ids,)?;
         info!("Model forward pass took {:?}, generated embeddings {:?}",
             forward_start.elapsed(), embeddings.shape());
 
@@ -374,32 +405,9 @@ impl RetriverModel
         Ok(embeddings)
     }
 
-    /// Генерирует тензор эмбеддингов для одного текста.
-    ///
-    /// Упрощенная версия `embed_tensor_batch` для обработки одиночного текста.
-    /// Для батчевой обработки используйте `embed_tensor_batch`.
-    #[allow(dead_code)]
-    async fn embed_tensor(&self, text: &str) -> Result<Tensor>
-    {
-        let start = std::time::Instant::now();
-        let model = self.model()?;
-        let tokens = Model::tokenizer(self)
-            .encode(text, true)
-            .map_err(|e| anyhow!("Encode error {}", e))?;
-
-        let token_ids = Tensor::new(tokens.get_ids(), self.device())?.unsqueeze(0)?;
-        let attention_mask = Tensor::new(tokens.get_attention_mask(), self.device())?.unsqueeze(0)?;
-        let token_type_ids = token_ids.zeros_like()?;
-        info!("running inference {:?}", token_ids.shape());
-        let embeddings = model.forward(&token_ids, &token_type_ids, Some(&attention_mask))?;
-        info!("generated embeddings {:?}", embeddings.shape());
-        let embeddings = Self::mean_pooling(&embeddings, &attention_mask)?;
-        info!("pooled embeddings {:?} in {:?} s", embeddings.shape(), start.elapsed());
-        Ok(embeddings)
-    }
 }
 
-impl Model<BertModel, Config> for RetriverModel
+impl Model for RetriverModel
 {
     fn name(&self) -> &ModelName 
     {
@@ -416,10 +424,6 @@ impl Model<BertModel, Config> for RetriverModel
         &mut self.tokenizer
     }
 
-    fn config(&self) -> &Config 
-    {
-        &self.config
-    }
     fn embedding_config(&self) -> Arc<EmbeddingConfiguration> 
     {
         Arc::clone(&self.embedding_config)
@@ -462,7 +466,7 @@ impl Model<BertModel, Config> for RetriverModel
             return Ok(())
         }
         let start = std::time::Instant::now();
-        let config = self.config().clone();
+        let config = self.model_config.clone();
         let model_name = self.model_name.as_ref().to_owned();
         let device = self.device().clone();
         let emb_cfg = self.embedding_config();
@@ -486,11 +490,22 @@ impl Model<BertModel, Config> for RetriverModel
     {
         self.model = None;
     }
-    fn model(&self) -> Result<&BertModel> 
+    fn forward(
+            &self,
+            input_ids: &Tensor,
+            attention_mask: &Tensor,
+            token_type_ids: &Tensor,
+        ) -> Result<Tensor> 
     {
-        let model = self.model.as_ref()
-            .context(format!("Model {} is not initialized!", self.model_name.as_ref()))?;
-        Ok(model)
+        if let Some(model) = self.model.as_ref()
+        {
+            let tensor = model.forward(input_ids, token_type_ids, Some(attention_mask))?;
+            Ok(tensor)
+        }
+        else
+        {
+            Err(anyhow!("Model {} is not initialized!", self.model_name.as_ref()))
+        }
     }
 }
 
@@ -501,12 +516,13 @@ mod tests
 
     use candle_transformers::models::bert::DTYPE;
     use candle_core::Tensor;
+    use rag_core::EmbeddingConfiguration;
     use tokenizers::PaddingParams;
     use tracing::info;
 
     use crate::model::Model;
     use crate::retriver::{RetriverModel};
-    use crate::{EmbeddingConfiguration, logger};
+    use crate::{logger};
     use anyhow::Result;
     #[tokio::test]
     async fn test_model()
@@ -563,7 +579,7 @@ mod tests
         let token_type_ids = token_ids.zeros_like().unwrap();
         info!("running inference on batch {:?}", token_ids.shape());
         model.load_model().await.unwrap();
-        let embeddings = model.model().unwrap().forward(&token_ids, &token_type_ids, Some(&attention_mask)).unwrap();
+        let embeddings = model.forward(&token_ids, &token_type_ids, &attention_mask).unwrap();
         info!("generated embeddings {:?}", embeddings.shape());
         let embeddings = mean_pooling(&embeddings, &attention_mask).unwrap();
         //let embeddings = normalize_l2(&embeddings).unwrap();
@@ -628,16 +644,6 @@ mod tests
         retriver.load_model().await.unwrap();
         let text = &["Тестовый текст лалалал"];
         let e =  retriver.embed_tensor_batch(text).await;
-        info!("{:?}", e);
-    }
-    #[tokio::test]
-    async fn test_embed2()
-    {
-        logger::init();
-        let emb_cfg = Arc::new(EmbeddingConfiguration::default());
-        let retriver = RetriverModel::new(emb_cfg).await.unwrap();
-        let text = "Тестовый текст лалалал";
-        let e =  retriver.embed_tensor(text).await;
         info!("{:?}", e);
     }
 }

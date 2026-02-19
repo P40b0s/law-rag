@@ -45,10 +45,6 @@
           placeholder="Введите описание коллекции"
           :rows="3"
         )
-      n-form-item(label="Ключевые слова")
-        n-dynamic-tags(
-          v-model:value="addFormData.keywords"
-        )
 
   // Модальное окно для редактирования коллекции
   n-modal(
@@ -75,10 +71,6 @@
           type="textarea"
           placeholder="Введите описание коллекции"
           :rows="3"
-        )
-      n-form-item(label="Ключевые слова")
-        n-dynamic-tags(
-          v-model:value="editFormData.keywords"
         )
 </template>
 
@@ -109,14 +101,12 @@ const editFormRef = ref<FormInst | null>(null)
 const addFormData = ref({
   name: '',
   description: '',
-  keywords: [] as string[]
 })
 
 const editFormData = ref({
   id: '',
   name: '',
   description: '',
-  keywords: [] as string[]
 })
 
 // Правила валидации
@@ -151,10 +141,10 @@ const editFormRules: FormRules = {
 const handleAddCollection = async () => {
   try {
     await addFormRef.value?.validate()
-    const newCollection = await addCollection(addFormData.value.name, addFormData.value.description, addFormData.value.keywords)
+    const newCollection = await addCollection(addFormData.value.name, addFormData.value.description)
     if (newCollection) {
       showAddModal.value = false
-      addFormData.value = { name: '', description: '', keywords: [] }
+      addFormData.value = { name: '', description: '' }
     }
   } catch (error) {
     console.error('Validation failed:', error)
@@ -166,8 +156,7 @@ const handleEditClick = (collection: Collection) => {
   editFormData.value = {
     id: collection.id,
     name: collection.name,
-    description: collection.description,
-    keywords: [...collection.keywords]
+    description: collection.description
   }
   showEditModal.value = true
 }
@@ -175,7 +164,7 @@ const handleEditClick = (collection: Collection) => {
 const handleUpdateCollection = async () => {
   try {
     await editFormRef.value?.validate()
-    const success = await updateCollection(editFormData.value.id, editFormData.value.description, editFormData.value.keywords)
+    const success = await updateCollection(editFormData.value.id, editFormData.value.description)
     if (success) {
       showEditModal.value = false
     }
@@ -201,18 +190,6 @@ const columns: DataTableColumns<Collection> = [
     key: 'description',
     ellipsis: {
       tooltip: true
-    }
-  },
-  {
-    title: 'Ключевые слова',
-    key: 'keywords',
-    width: 250,
-    render: (row) => {
-      return h(NSpace, { size: 4 }, () =>
-        row.keywords.map((keyword: string) =>
-          h(NTag, { size: 'small', type: 'info' }, { default: () => keyword })
-        )
-      )
     }
   },
   {

@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use candle_transformers::generation::LogitsProcessor;
-use crate::{EmbeddingConfiguration, token_output_stream::TokenOutputStream};
+use rag_core::EmbeddingConfiguration;
+use crate::{token_output_stream::TokenOutputStream};
 
 /// Common settings for all generator models
 #[derive(Debug, Clone)]
@@ -63,7 +64,6 @@ impl Default for GeneratorSettings
 pub trait Generator: Send + Sync
 where Self: Sized
 {
-    fn load(settings: Arc<EmbeddingConfiguration>) -> anyhow::Result<Self>;
     /// Load the model into memory
     fn load_model(&mut self) -> impl std::future::Future<Output = Result<()>> + Send;
 
@@ -78,14 +78,6 @@ where Self: Sized
 
     /// Get system prompt
     fn get_system_prompt(&self) -> &str;
-    fn get_message<C: ToString + AsRef<str>>(&self, query: &str, context: &[C]) -> String;
-    fn get_eof(&self) -> &'static str;
-
-    /// Get token output stream
-    fn get_token_stream(&self) -> TokenOutputStream;
-
-    /// Get logits processor
-    fn get_logits_processor(&self) -> LogitsProcessor;
 
     /// Generate response for query with context
     fn prompt<'a, C: ToString  + AsRef<str>>(

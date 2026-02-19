@@ -55,6 +55,7 @@ impl Chunker for SystemaActualChunker
 
             for (idx, (text, token_count)) in sub_chunks.into_iter().enumerate()
             {
+                //ноду с определением пропускаем, она будет включена в контекст всех детей
                 if text.ends_with(":")
                 {
                     continue;
@@ -127,8 +128,8 @@ mod tests
     use std::sync::Arc;
     use tracing::debug;
     use utilites::Date;
-    use embedding::{EmbeddingConfiguration, RetriverModel};
-    use rag_core::Converter;
+    use embedding::{RetriverModel};
+    use rag_core::{Converter, EmbeddingConfiguration};
     use crate::{chunker::Chunker, systema_actual_converter::SystemaActualConverter};
     use super::SystemaActualChunker;
 

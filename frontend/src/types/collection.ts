@@ -4,8 +4,7 @@ import z from "zod/v3";
 const CollectionSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
-  description: z.string(),
-  keywords: z.array(z.string())
+  description: z.string()
 })
 const CollectionArraySchema = z.array(CollectionSchema);
 

@@ -53,7 +53,7 @@ impl DocumentsService
         });
         
         let chunker = SystemaActualChunker::new(result);
-        let retriver_lock = self.rag_service.get_retriver().await;
+        let retriver_lock = self.rag_service.get_encoder().await;
         let chunks = chunker.get_chunks(&*retriver_lock, sender).await?;
         debug!("Получили {} чанков для документа {} от {}", chunks.len(), number, date_str);
         let document = Document::from_chunks(chunks, collection_id)
@@ -78,9 +78,7 @@ impl DocumentsService
     }
     pub async fn delete_document(&self, hash: &str) -> Result<(), Error>
     {
-        let document = self.database_service.get_document(hash).await?;
-        let collection = self.database_service.get_collection_by_id(document.collection_id).await?;
-        let _ = self.rag_service.delete_document_from_qdrant(hash, &collection.name).await?;
+        let _ = self.rag_service.delete_document_from_qdrant(hash).await?;
         let _ = self.database_service.delete_document(hash).await?;
         Ok(())
     }
@@ -179,19 +177,14 @@ impl DocumentsService
 
     pub async fn search_context(&self,
         query: &str,
-        limit: usize,
-        reranker_limit: usize,
+        per_collection_limit: usize,
+        final_limit: usize,
     ) -> Result<Vec<RerankResult<SearchResult>>, Error>
     {
         let rag_service = self.rag_service.clone();
-        let collection = self.database_service.get_collections().await?;
-        //FIXME не находит даже если есть ключевые слова, пока уберем
-        //let collections = self.rag_service.rank_collections_by_relevance(query, collection, 0.2).await?;
-        //let collections_names = collections.iter().map(|c| c.db_object.name.as_str()).collect::<Vec<&str>>();
-        let collections_names = collection.iter().map(|c| c.name.as_str()).collect::<Vec<&str>>();
         let msg = ServiceStatus::mesage(format!("Идет процесс поиска контекста по запросу `{}`, это может занять несколько минут", query));
         self.sse_service.status_message(msg);
-        let context = rag_service.search_multiple_collections(query, limit, reranker_limit, collections_names.as_slice()).await?;
+        let context = rag_service.search(query, final_limit, per_collection_limit).await?;
         Ok(context)
     }
 

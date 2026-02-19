@@ -29,8 +29,8 @@ export default function useCollections()
   /**
    * Добавление новой коллекции
    */
-  const addCollection = async (name: string, description: string, keywords: string[]): Promise<Collection | undefined> => {
-    const newCollection = await http_service.collections_service.add_collection(name, description, keywords)
+  const addCollection = async (name: string, description: string): Promise<Collection | undefined> => {
+    const newCollection = await http_service.collections_service.add_collection(name, description)
     if (newCollection) {
       collections.value.push(newCollection)
     }
@@ -40,15 +40,14 @@ export default function useCollections()
   /**
    * Обновление коллекции
    */
-  const updateCollection = async (id: string, description: string, keywords: string[]): Promise<boolean> => {
-    const success = await http_service.collections_service.update_collection(id, description, keywords)
+  const updateCollection = async (id: string, description: string): Promise<boolean> => {
+    const success = await http_service.collections_service.update_collection(id, description)
     if (success) 
     {
       const index = collections.value.findIndex(c => c.id === id)
       if (index !== -1) 
       {
         collections.value[index].description = description
-        collections.value[index].keywords = keywords
       }
     }
     return success

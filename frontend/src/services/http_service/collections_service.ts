@@ -10,13 +10,11 @@ interface AddCollectionRequest
 {
     name: string;
     description: string;
-    keywords: string[];
 }
 interface UpdateDescriptionRequest 
 {
     id: string;
     description: string;
-    keywords: string[];
 }
 
 
@@ -42,13 +40,12 @@ class CollectionsService
     /**
      * Добавление коллекции
      */
-    async add_collection(name: string, description: string, keywords: string[]): Promise<Collection | undefined>
+    async add_collection(name: string, description: string): Promise<Collection | undefined>
     {
         const payload: AddCollectionRequest =
         {
             name,
             description,
-            keywords
         };
 
         const result: Result<Collection, HTTPError> = await post(
@@ -87,13 +84,12 @@ class CollectionsService
      /**
      * Обновление описания коллекции по id
      */
-    async update_collection(id: string, description: string, keywords: string[]): Promise<boolean>
+    async update_collection(id: string, description: string): Promise<boolean>
     {
         const payload: UpdateDescriptionRequest =
         {
             id,
             description,
-            keywords
         };
 
         const result: Result<void, HTTPError> = await post(

@@ -1,5 +1,9 @@
+use std::str::FromStr;
+use std::sync::Arc;
+
+use anyhow::anyhow;
 use embedding::{BgeReranker, Model};
-use rag_core::{Chunk, RerankResult, ServiceStatus};
+use rag_core::{Chunk, Embedder, EmbeddingConfiguration, QdrantConfiguration, RerankResult, ServiceStatus};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -50,7 +54,7 @@ impl QdrantPayload
 }
 
 #[derive(Debug, Clone)]
-pub struct QdrantConfig
+pub struct QdrantInternalConfig
 {
     pub url: String,
     pub collection_name: String,
@@ -89,52 +93,79 @@ impl From<Distance> for i32
         }
     }
 }
+impl FromStr for Distance
+{
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> 
+    {
+        match s
+        {
+            "cosine" => Ok(Distance::Cosine),
+            "euclidean" => Ok(Distance::Euclidean),
+            "dot" => Ok(Distance::Dot),
+            _ => Err(anyhow!("{} is not valid distance, use `cosine`, `euclidean` or `dot`", s))
+        }
+    }
+}
 
 
 pub struct QdrantManager
 {
     client: Qdrant,
-    config: QdrantConfig,
-    dimension: usize,
-    // retriver_model: &'model embedding::RetriverModel,
-    // reranking_model: &'model embedding::BgeReranker
+    qdrant_config: Arc<QdrantConfiguration>,
+    embedding_config: Arc<EmbeddingConfiguration>,
 }
 
 impl QdrantManager
 {
-    pub  fn new(config: QdrantConfig, dimension: usize) -> Result<Self> 
+    pub  fn new(qdrant_config: Arc<QdrantConfiguration>, embedding_config: Arc<EmbeddingConfiguration>) -> Result<Self> 
     {
-        let client = Qdrant::from_url(&config.url)
+        let client = Qdrant::from_url(&qdrant_config.qdrant_url)
             .build()?;
             
         Ok(Self 
         {
             client,
-            config,
-            dimension
+            qdrant_config,
+            embedding_config,
         })
     }
-    /// Создание коллекции (если не существует)
-    pub async fn ensure_collection(&self) -> Result<()> 
+
+    pub fn configuration(&self) -> &QdrantConfiguration
+    {
+        &self.qdrant_config
+    }
+
+    pub async fn get_collections_names(&self) -> Result<Vec<String>>
     {
         let collections_list = self.client.list_collections().await?;
-        
+        Ok(collections_list.collections
+            .into_iter()
+            .map(|c| c.name)
+            .collect()
+        )
+    }
+    /// Создание коллекции (если не существует)
+    pub async fn ensure_collection(&self, collection_name: &str) -> Result<()> 
+    {
+        let collections_list = self.client.list_collections().await?;
+        let distance: Distance = self.qdrant_config.distance.parse()?;
         if !collections_list.collections.iter()
-            .any(|c| c.name == self.config.collection_name) 
+            .any(|c| c.name == collection_name) 
         {
 
-            let vec_params =   qdrant_client::qdrant::VectorParamsBuilder::new(self.dimension as u64, self.config.distance.clone().into()).build();
+            let vec_params =   qdrant_client::qdrant::VectorParamsBuilder::new(self.embedding_config.dimension as u64, distance.into()).build();
             let vectors_config = qdrant_client::qdrant::VectorsConfig
             {
                 config: Some(qdrant_client::qdrant::vectors_config::Config::Params(vec_params))
                       
             };
-            let collection = CreateCollectionBuilder::new(&self.config.collection_name)
+            let collection = CreateCollectionBuilder::new(collection_name)
             .vectors_config(vectors_config).build();
             let _ = self.client.create_collection(collection).await?;
             
             
-            info!("Created collection: {}", self.config.collection_name);
+            info!("Created collection: {}", collection_name);
 
             // Создаём payload-индексы для полей, используемых в фильтрах.
             // Keyword-индекс даёт O(log n) вместо full-scan при фильтрации.
@@ -143,7 +174,7 @@ impl QdrantManager
             {
                 let _ = self.client.create_field_index(
                     CreateFieldIndexCollectionBuilder::new(
-                        &self.config.collection_name,
+                        collection_name,
                         field,
                         FieldType::Keyword,
                     ).build()
@@ -154,7 +185,7 @@ impl QdrantManager
             // Integer-индекс для range-фильтра по дате.
             let _ = self.client.create_field_index(
                 CreateFieldIndexCollectionBuilder::new(
-                    &self.config.collection_name,
+                    collection_name,
                     "document_sign_date",
                     FieldType::Integer,
                 ).build()
@@ -163,21 +194,19 @@ impl QdrantManager
         }
         else
         {
-            warn!("Collection already exists: {}", self.config.collection_name);
+            warn!("Collection already exists: {}", collection_name);
         }
 
         Ok(())
     }
     
-    /// Размер мини-батча для генерации эмбеддингов.
-    /// Несколько чанков обрабатываются за один forward pass через модель.
-    const EMBEDDING_BATCH_SIZE: usize = 8;
 
     /// Добавление чанков с эмбеддингами в Qdrant (батчевая обработка)
     pub async fn add_chunks_to_qdrant<'model>(
         &self,
         chunks: Vec<Chunk>,
-        retriver_model: &'model embedding::RetriverModel,
+        embedder: &'model impl Embedder,
+        collection_name: &str,
         sender: tokio::sync::mpsc::UnboundedSender<ServiceStatus>
     ) -> Result<Vec<String>> {
         use tokio::time::{timeout, Duration};
@@ -185,34 +214,41 @@ impl QdrantManager
         let mut all_ids = Vec::new();
         let chunks_count = chunks.len();
         let doc_hash = chunks.first().map(|c| c.hash.clone()).unwrap_or(String::new());
-        let dimension = retriver_model.dimension();
+        let dimension = embedder.dimension();
+        let batch_size = self.embedding_config.embedding_batch_size;
 
         info!("Starting to add {} chunks to Qdrant for document {} (batch_size={})",
-            chunks_count, doc_hash, Self::EMBEDDING_BATCH_SIZE);
+            chunks_count, doc_hash, batch_size);
         let start_time = std::time::Instant::now();
 
         // Обрабатываем мини-батчами
-        for (batch_idx, batch) in chunks.chunks(Self::EMBEDDING_BATCH_SIZE).enumerate()
+        for (batch_idx, batch) in chunks.chunks(batch_size).enumerate()
         {
-            let batch_start = batch_idx * Self::EMBEDDING_BATCH_SIZE;
+            let batch_start = batch_idx * batch_size;
             let batch_end = (batch_start + batch.len()).min(chunks_count);
 
             let elapsed = start_time.elapsed();
             let processed = batch_start;
-            let chunks_per_sec = if elapsed.as_secs() > 0 {
+            let chunks_per_sec = if elapsed.as_secs() > 0 
+            {
                 processed as f64 / elapsed.as_secs_f64()
-            } else {
+            } 
+            else 
+            {
                 0.0
             };
-            let eta_secs = if chunks_per_sec > 0.0 {
+            let eta_secs = if chunks_per_sec > 0.0 
+            {
                 ((chunks_count - processed) as f64 / chunks_per_sec) as u64
-            } else {
+            }
+            else 
+            {
                 0
             };
 
             info!("Processing batch {}/{} (chunks {}-{}/{}, {:.2} chunks/sec, ETA: {}s)",
                 batch_idx + 1,
-                (chunks_count + Self::EMBEDDING_BATCH_SIZE - 1) / Self::EMBEDDING_BATCH_SIZE,
+                (chunks_count + batch_size - 1) / batch_size,
                 batch_start + 1, batch_end, chunks_count,
                 chunks_per_sec, eta_secs
             );
@@ -224,15 +260,18 @@ impl QdrantManager
             let embedding_timeout = Duration::from_secs(300);
             let embeddings_result = timeout(
                 embedding_timeout,
-                retriver_model.generate_embeddings_batch(&texts)
+                embedder.generate_embeddings_batch(&texts)
             ).await;
 
-            let embeddings = match embeddings_result {
-                Ok(Ok(embs)) => {
+            let embeddings = match embeddings_result 
+            {
+                Ok(Ok(embs)) => 
+                {
                     info!("Generated {} embeddings for batch {}", embs.len(), batch_idx + 1);
                     embs
                 },
-                Ok(Err(e)) => {
+                Ok(Err(e)) => 
+                {
                     error!("Error generating embeddings for batch {}: {}", batch_idx + 1, e);
                     let status = ServiceStatus::error(doc_hash.clone(), e);
                     let _ = sender.send(status);
@@ -240,7 +279,8 @@ impl QdrantManager
                         "Error generating embeddings for batch {}", batch_idx + 1
                     )));
                 },
-                Err(_) => {
+                Err(_) => 
+                {
                     error!("Timeout generating embeddings for batch {} after {:?}",
                         batch_idx + 1, embedding_timeout);
                     let status = ServiceStatus::error(
@@ -254,7 +294,8 @@ impl QdrantManager
                 }
             };
 
-            if embeddings.len() != batch.len() {
+            if embeddings.len() != batch.len() 
+            {
                 error!("Embeddings count mismatch: expected {}, got {}", batch.len(), embeddings.len());
                 return Err(Error::AnyhowError(anyhow::anyhow!(
                     "Embeddings count mismatch: expected {}, got {}", batch.len(), embeddings.len()
@@ -268,7 +309,8 @@ impl QdrantManager
                 let global_idx = batch_start + i;
 
                 // Проверяем размерность
-                if embedding.len() != dimension {
+                if embedding.len() != dimension 
+                {
                     error!("Vector size mismatch for chunk {}/{}: expected {}, got {}",
                         global_idx + 1, chunks_count, dimension, embedding.len());
                     return Err(Error::VectorSizeError(dimension, embedding.len()));
@@ -290,7 +332,7 @@ impl QdrantManager
             let point_structs: Vec<PointStruct> = points.iter()
                 .map(|p| p.into())
                 .collect();
-            let builder = UpsertPointsBuilder::new(&self.config.collection_name, point_structs);
+            let builder = UpsertPointsBuilder::new(collection_name, point_structs);
 
             let upsert_timeout = Duration::from_secs(60);
             let upsert_result = timeout(
@@ -361,75 +403,77 @@ impl QdrantManager
     }
     
     /// Поиск по семантическому сходству
-    pub async fn semantic_search<'model>(
-        &self,
-        query: &str,
-        limit: usize,
-        rerank_limit: usize,
-        retriver_model: &'model embedding::RetriverModel,
-        reranker_model: &'model embedding::BgeReranker,
-        filter: Option<SearchFilter>,
-    ) -> Result<Vec<RerankResult<SearchResult>>> {
-        // Получаем эмбеддинг для запроса
-        let query_vector = retriver_model.generate_embeddings(&[query]).await?;
-        // Строим запрос к Qdrant
-        let mut search_request = SearchPoints 
-        {
-            collection_name: self.config.collection_name.clone(),
-            vector: query_vector,
-            limit: limit as u64,
-            with_payload: Some(WithPayloadSelector 
-            {
-                selector_options: Some(
-                    qdrant_client::qdrant::with_payload_selector::SelectorOptions::Enable(true)
-                ),
-            }),
-            ..Default::default()
-        };
+    // pub async fn semantic_search<'model>(
+    //     &self,
+    //     query: &str,
+    //     limit: usize,
+    //     rerank_limit: usize,
+    //     retriver_model: &'model embedding::RetriverModel,
+    //     reranker_model: &'model embedding::BgeReranker,
+    //     filter: Option<SearchFilter>,
+    // ) -> Result<Vec<RerankResult<SearchResult>>> {
+    //     // Получаем эмбеддинг для запроса
+    //     let query_vector = retriver_model.generate_embeddings(&[query]).await?;
+    //     // Строим запрос к Qdrant
+    //     let mut search_request = SearchPoints 
+    //     {
+    //         collection_name: self.config.collection_name.clone(),
+    //         vector: query_vector,
+    //         limit: limit as u64,
+    //         with_payload: Some(WithPayloadSelector 
+    //         {
+    //             selector_options: Some(
+    //                 qdrant_client::qdrant::with_payload_selector::SelectorOptions::Enable(true)
+    //             ),
+    //         }),
+    //         ..Default::default()
+    //     };
         
-        // Добавляем фильтры, если есть
-        if let Some(filter) = filter 
-        {
-            search_request.filter = Some(filter.into());
-        }
-         //let builder = SearchPointsBuilder::new(&self.config.collection_name, search_request, limit);
-        // Вставляем в Qdrant
-        //let _ = self.client.upsert_points(builder.build()).await?;
-        // Выполняем поиск
-        let search_results = self.client
-            .search_points(search_request)
-            .await?;
+    //     // Добавляем фильтры, если есть
+    //     if let Some(filter) = filter 
+    //     {
+    //         search_request.filter = Some(filter.into());
+    //     }
+    //      //let builder = SearchPointsBuilder::new(&self.config.collection_name, search_request, limit);
+    //     // Вставляем в Qdrant
+    //     //let _ = self.client.upsert_points(builder.build()).await?;
+    //     // Выполняем поиск
+    //     let search_results = self.client
+    //         .search_points(search_request)
+    //         .await?;
         
-        // Конвертируем результаты
-        let results: Vec<SearchResult> = search_results.result
-            .into_iter()
-            .map(|sp| SearchResult::from_scored_point(sp))
-            .collect();
-        let reranking = reranker_model.rerank(query, results, rerank_limit).await
-            .inspect_err(|e| tracing::error!("{}", e))?;
-        //reranking.into_iter().map(|r| r)
-        Ok(reranking)
-    }
+    //     // Конвертируем результаты
+    //     let results: Vec<SearchResult> = search_results.result
+    //         .into_iter()
+    //         .map(|sp| SearchResult::from_scored_point(sp))
+    //         .collect();
+    //     let reranking = reranker_model.rerank(query, results, rerank_limit).await
+    //         .inspect_err(|e| tracing::error!("{}", e))?;
+    //     //reranking.into_iter().map(|r| r)
+    //     Ok(reranking)
+    // }
 
      /// Поиск по семантическому сходству (если коллекций несколько выносим создание эмбеддингов за цикл)
-    pub async fn semantic_search_with_embeddings<'model>(
+    /// Векторный поиск без реранкинга — для использования в мульти-коллекционном поиске.
+    /// Реранкинг должен выполняться один раз после объединения результатов всех коллекций.
+    /// Минимальный cosine score для попадания в пул реранкинга.
+    /// Отсекает заведомо нерелевантные результаты до реранкера.
+
+    pub async fn vector_search_raw(
         &self,
-        query: &str,
-        limit: usize,
-        rerank_limit: usize,
         embeddings: Vec<f32>,
-        reranker_model: &'model embedding::BgeReranker,
+        collection_name: &str,
+        limit: usize,
         filter: Option<SearchFilter>,
-    ) -> Result<Vec<RerankResult<SearchResult>>> {
-        // Получаем эмбеддинг для запроса
-        //let query_vector = retriver_model.generate_embeddings(&[query]).await?;
-        // Строим запрос к Qdrant
-        let mut search_request = SearchPoints 
+    ) -> Result<Vec<SearchResult>>
+    {
+        let mut search_request = SearchPoints
         {
-            collection_name: self.config.collection_name.clone(),
+            collection_name: collection_name.to_owned(),
             vector: embeddings,
             limit: limit as u64,
-            with_payload: Some(WithPayloadSelector 
+            score_threshold: Some(self.qdrant_config.min_search_score),
+            with_payload: Some(WithPayloadSelector
             {
                 selector_options: Some(
                     qdrant_client::qdrant::with_payload_selector::SelectorOptions::Enable(true)
@@ -437,67 +481,101 @@ impl QdrantManager
             }),
             ..Default::default()
         };
-        
-        // Добавляем фильтры, если есть
-        if let Some(filter) = filter 
+        if let Some(f) = filter
         {
-            search_request.filter = Some(filter.into());
+            search_request.filter = Some(f.into());
         }
-         //let builder = SearchPointsBuilder::new(&self.config.collection_name, search_request, limit);
-        // Вставляем в Qdrant
-        //let _ = self.client.upsert_points(builder.build()).await?;
-        // Выполняем поиск
-        let search_results = self.client
-            .search_points(search_request)
-            .await?;
-        
-        // Конвертируем результаты
-        let results: Vec<SearchResult> = search_results.result
-            .into_iter()
-            .map(|sp| SearchResult::from_scored_point(sp))
-            .collect();
-        let reranking = reranker_model.rerank(query, results, rerank_limit).await
-            .inspect_err(|e| tracing::error!("{}", e))?;
-        //reranking.into_iter().map(|r| r)
-        Ok(reranking)
+        let results = self.client.search_points(search_request).await?;
+        Ok(results.result.into_iter().map(SearchResult::from_scored_point).collect())
     }
+
+    // pub async fn semantic_search_with_embeddings<'model>(
+    //     &self,
+    //     query: &str,
+    //     limit: usize,
+    //     rerank_limit: usize,
+    //     embeddings: Vec<f32>,
+    //     reranker_model: &'model embedding::BgeReranker,
+    //     filter: Option<SearchFilter>,
+    // ) -> Result<Vec<RerankResult<SearchResult>>> 
+    // {
+    //     // Получаем эмбеддинг для запроса
+    //     //let query_vector = retriver_model.generate_embeddings(&[query]).await?;
+    //     // Строим запрос к Qdrant
+    //     let mut search_request = SearchPoints 
+    //     {
+    //         collection_name: self.config.collection_name.clone(),
+    //         vector: embeddings,
+    //         limit: limit as u64,
+    //         with_payload: Some(WithPayloadSelector 
+    //         {
+    //             selector_options: Some(
+    //                 qdrant_client::qdrant::with_payload_selector::SelectorOptions::Enable(true)
+    //             ),
+    //         }),
+    //         ..Default::default()
+    //     };
+        
+    //     // Добавляем фильтры, если есть
+    //     if let Some(filter) = filter 
+    //     {
+    //         search_request.filter = Some(filter.into());
+    //     }
+    //      //let builder = SearchPointsBuilder::new(&self.config.collection_name, search_request, limit);
+    //     // Вставляем в Qdrant
+    //     //let _ = self.client.upsert_points(builder.build()).await?;
+    //     // Выполняем поиск
+    //     let search_results = self.client
+    //         .search_points(search_request)
+    //         .await?;
+        
+    //     // Конвертируем результаты
+    //     let results: Vec<SearchResult> = search_results.result
+    //         .into_iter()
+    //         .map(|sp| SearchResult::from_scored_point(sp))
+    //         .collect();
+    //     let reranking = reranker_model.rerank(query, results, rerank_limit).await
+    //         .inspect_err(|e| tracing::error!("{}", e))?;
+    //     //reranking.into_iter().map(|r| r)
+    //     Ok(reranking)
+    // }
     
     /// Поиск с гибридным подходом (семантический + ключевые слова)
-    pub async fn hybrid_search<'model>(
-        &self,
-        query: &str,
-        limit: usize,
-        rerank_limit: usize,
-        filter: Option<SearchFilter>,
-        keyword_weight: f32,
-        semantic_weight: f32,
-        retriver_model: &'model embedding::RetriverModel,
-        reranker_model: &'model embedding::BgeReranker,
-    ) -> Result<Vec<SearchResult>> {
-        // 1. Семантический поиск
-        let semantic_results = self.semantic_search(query, limit * 2, rerank_limit * 2, retriver_model, reranker_model, filter.clone()).await?;
-        let semantic_results = semantic_results.into_iter()
-        .map(|r| SearchResult
-        {
-            id: r.db_object.id,
-            score: r.score,
-            payload: r.db_object.payload
-        }).collect();
-        // 2. Поиск по ключевым словам (если нужно)
-        // Можно использовать BM25 или другие методы
-        let keyword_results = self.keyword_search(query, limit * 2, filter).await?;
+    // pub async fn hybrid_search<'model>(
+    //     &self,
+    //     query: &str,
+    //     limit: usize,
+    //     rerank_limit: usize,
+    //     filter: Option<SearchFilter>,
+    //     keyword_weight: f32,
+    //     semantic_weight: f32,
+    //     retriver_model: &'model embedding::RetriverModel,
+    //     reranker_model: &'model embedding::BgeReranker,
+    // ) -> Result<Vec<SearchResult>> {
+    //     // 1. Семантический поиск
+    //     let semantic_results = self.semantic_search(query, limit * 2, rerank_limit * 2, retriver_model, reranker_model, filter.clone()).await?;
+    //     let semantic_results = semantic_results.into_iter()
+    //     .map(|r| SearchResult
+    //     {
+    //         id: r.db_object.id,
+    //         score: r.score,
+    //         payload: r.db_object.payload
+    //     }).collect();
+    //     // 2. Поиск по ключевым словам (если нужно)
+    //     // Можно использовать BM25 или другие методы
+    //     let keyword_results = self.keyword_search(query, limit * 2, filter).await?;
         
-        // 3. Объединяем результаты
-        let combined = Self::combine_results(
-            semantic_results,
-            keyword_results,
-            semantic_weight,
-            keyword_weight,
-            limit,
-        );
+    //     // 3. Объединяем результаты
+    //     let combined = Self::combine_results(
+    //         semantic_results,
+    //         keyword_results,
+    //         semantic_weight,
+    //         keyword_weight,
+    //         limit,
+    //     );
         
-        Ok(combined)
-    }
+    //     Ok(combined)
+    // }
     
     /// Поиск по ключевым словам через Qdrant scroll (без вектора).
     /// Использует text-match по полю `text` + дополнительные фильтры.
@@ -505,6 +583,7 @@ impl QdrantManager
         &self,
         query: &str,
         limit: usize,
+        collection_name: &str,
         filter: Option<SearchFilter>,
     ) -> Result<Vec<SearchResult>>
     {
@@ -550,7 +629,7 @@ impl QdrantManager
             scroll_filter.must = f.conditions;
         }
 
-        let scroll = ScrollPointsBuilder::new(&self.config.collection_name)
+        let scroll = ScrollPointsBuilder::new(collection_name)
             .filter(scroll_filter)
             .limit(limit as u32)
             .with_payload(true)
@@ -628,31 +707,46 @@ impl QdrantManager
     {
         let filter = SearchFilter::new()
             .add_exact_match("document_hash", hash);
-        
-        // Используем пустой вектор для получения всех точек
-        let search_request = SearchPoints 
+        let collections_list = self.client.list_collections().await?;
+        let mut search_results = None;
+        for collection in collections_list.collections
         {
-            collection_name: self.config.collection_name.clone(),
-            vector: vec![0.0; dimension],
-            filter: Some(filter.into()),
-            limit: limit.unwrap_or(1000) as u64,
-            with_payload: Some(WithPayloadSelector 
+            let search_request = SearchPoints 
             {
-                selector_options: Some(
-                    qdrant_client::qdrant::with_payload_selector::SelectorOptions::Enable(true)
-                ),
-            }),
-            ..Default::default()
-        };
+                collection_name: collection.name,
+                vector: vec![0.0; dimension],
+                filter: Some(filter.clone().into()),
+                limit: limit.unwrap_or(1000) as u64,
+                with_payload: Some(WithPayloadSelector 
+                {
+                    selector_options: Some(
+                        qdrant_client::qdrant::with_payload_selector::SelectorOptions::Enable(true)
+                    ),
+                }),
+                ..Default::default()
+            };
         
-        let results = self.client
-            .search_points(search_request)
-            .await?;
+            let results = self.client
+                .search_points(search_request)
+                .await?;
+            if results.result.len() > 0
+            {
+                search_results = Some(results);
+                break;
+            }
+        }
         
-        Ok(results.result
+        if let Some(results) = search_results
+        {
+            Ok(results.result
             .into_iter()
             .map(SearchResult::from_scored_point)
             .collect())
+        }
+        else
+        {
+            Ok(Vec::with_capacity(0))
+        }
     }
     
     /// Удаление документа из индекса
@@ -660,25 +754,38 @@ impl QdrantManager
     {
         let filter = SearchFilter::new()
             .add_exact_match("document_hash", hash);
-        
-        let delete_request = qdrant_client::qdrant::DeletePoints 
+        let collections_list = self.client.list_collections().await?;
+        let mut update_status = None;
+        for collection in collections_list.collections
         {
-            collection_name: self.config.collection_name.clone(),
-            points: Some(qdrant_client::qdrant::PointsSelector 
+             let delete_request = qdrant_client::qdrant::DeletePoints 
             {
-                points_selector_one_of: Some(
-                    qdrant_client::qdrant::points_selector::PointsSelectorOneOf::Filter(
-                        filter.into()
-                    )
-                ),
-            }),
-            ..Default::default()
-        };
+                collection_name: collection.name,
+                points: Some(qdrant_client::qdrant::PointsSelector 
+                {
+                    points_selector_one_of: Some(
+                        qdrant_client::qdrant::points_selector::PointsSelectorOneOf::Filter(
+                            filter.clone().into()
+                        )
+                    ),
+                }),
+                ..Default::default()
+            };
         
-        let response = self.client
-            .delete_points(delete_request)
-            .await?;
-        Ok(response.result.and_then(|r| Some(r.status())))
+            let response = self.client
+                .delete_points(delete_request)
+                .await?;
+            if let Some(status) = response.result
+            {
+                let status = status.status();
+                update_status = Some(status.clone());
+                if let UpdateStatus::Completed = status
+                {
+                    break;
+                }
+            }
+        }
+        Ok(update_status)
     }
 }
 

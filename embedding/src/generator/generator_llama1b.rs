@@ -1,11 +1,12 @@
 use std::sync::{Arc, atomic::AtomicUsize, Mutex};
 use anyhow::{Context, anyhow};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
+use rag_core::EmbeddingConfiguration;
 use tokenizers::Tokenizer;
 use tracing::{debug, info, warn};
 use candle_core::{Device, Tensor};
 use candle_nn::VarBuilder;
-use crate::{EmbeddingConfiguration, token_output_stream::TokenOutputStream};
+use crate::{Generator, token_output_stream::TokenOutputStream};
 use super::generator_trait::GeneratorSettings;
 
 // Using non-quantized llama for 1B model with safetensors format
@@ -28,7 +29,26 @@ pub struct GeneratorLlama1b {
 
 impl GeneratorLlama1b {
    
+    pub fn load(settings: Arc<EmbeddingConfiguration>) -> anyhow::Result<Self>
+    {
+        let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
+        info!("Running on device: {:?}", &device);
+        let slf = Self
+        {
+            system_prompt: settings.system_prompt.clone(),
+            settings,
+            model_settings: GeneratorSettings::default(),
+            model: None,
+            config: None,
+            cache: Mutex::new(None),
+            tokenizer: None,
+            device,
+            size: AtomicUsize::new(0)
 
+        };
+        let slf = slf.load_tokenizer()?;
+        Ok(slf)
+    }
     fn format_size(size_in_bytes: usize) -> String
     {
         if size_in_bytes < 1_000
@@ -74,6 +94,22 @@ impl GeneratorLlama1b {
             *cache = None;
         }
     }
+    fn get_message<C: ToString + AsRef<str>>(&self, query: &str, context: &[C]) -> String 
+    {
+        let prompt = format!(
+        "<|begin_of_text|>\
+        <|start_header_id|>system<|end_header_id|>\n\n\
+        {}\nКонтекст:\n{}<|eot_id|>\n\
+        <|start_header_id|>user<|end_header_id|>\n\n\
+        {}<|eot_id|>\n\
+        <|start_header_id|>assistant<|end_header_id|>\n\n",
+        &self.get_system_prompt(), query, context.iter().map(|c| c.as_ref()).collect::<Vec<_>>().join("\n"));
+        prompt
+    }
+    fn get_eof(&self) -> &'static str
+    {
+        "<|eot_id|>"
+    }
 
     fn forward(&mut self, input: &candle_core::Tensor, offset: usize) -> anyhow::Result<candle_core::Tensor>
     {
@@ -96,31 +132,33 @@ impl GeneratorLlama1b {
             Err(anyhow::Error::msg("Ошибка, модель или конфигурация не загружена!"))
         }
     }
+    fn get_logits_processor(&self) -> LogitsProcessor {
+        let settings = &self.model_settings;
+        let temperature = settings.temperature;
+        let top_k = settings.top_k;
+        let top_p = settings.top_p;
+        let sampling = if temperature <= 0. {
+            Sampling::ArgMax
+        } else {
+            match (top_k, top_p) {
+                (None, None) => Sampling::All { temperature },
+                (Some(k), None) => Sampling::TopK { k, temperature },
+                (None, Some(p)) => Sampling::TopP { p, temperature },
+                (Some(k), Some(p)) => Sampling::TopKThenTopP { k, p, temperature },
+            }
+        };
+        LogitsProcessor::from_sampling(settings.seed, sampling)
+    }
+    fn get_token_stream(&self) -> TokenOutputStream 
+    {
+        TokenOutputStream::new(self.tokenizer.as_ref().unwrap().clone())
+    }
 }
 
 // Implement the Generator trait for GeneratorLlama1b
 impl super::generator_trait::Generator for GeneratorLlama1b
 {
-    fn load(settings: Arc<EmbeddingConfiguration>) -> anyhow::Result<Self>
-    {
-        let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
-        info!("Running on device: {:?}", &device);
-        let slf = Self
-        {
-            system_prompt: settings.system_prompt.clone(),
-            settings,
-            model_settings: GeneratorSettings::default(),
-            model: None,
-            config: None,
-            cache: Mutex::new(None),
-            tokenizer: None,
-            device,
-            size: AtomicUsize::new(0)
-
-        };
-        let slf = slf.load_tokenizer()?;
-        Ok(slf)
-    }
+    
     async fn load_model(&mut self) -> anyhow::Result<()> 
     {
         if self.model.is_some() 
@@ -202,44 +240,6 @@ impl super::generator_trait::Generator for GeneratorLlama1b
 
     fn get_system_prompt(&self) -> &str {
         &self.system_prompt
-    }
-    fn get_message<C: ToString + AsRef<str>>(&self, query: &str, context: &[C]) -> String 
-    {
-        let prompt = format!(
-        "<|begin_of_text|>\
-        <|start_header_id|>system<|end_header_id|>\n\n\
-        {}\nКонтекст:\n{}<|eot_id|>\n\
-        <|start_header_id|>user<|end_header_id|>\n\n\
-        {}<|eot_id|>\n\
-        <|start_header_id|>assistant<|end_header_id|>\n\n",
-        &self.get_system_prompt(), query, context.iter().map(|c| c.as_ref()).collect::<Vec<_>>().join("\n"));
-        prompt
-    }
-    fn get_eof(&self) -> &'static str
-    {
-        "<|eot_id|>"
-    }
-
-    fn get_token_stream(&self) -> TokenOutputStream {
-        TokenOutputStream::new(self.tokenizer.as_ref().unwrap().clone())
-    }
-
-    fn get_logits_processor(&self) -> LogitsProcessor {
-        let settings = &self.model_settings;
-        let temperature = settings.temperature;
-        let top_k = settings.top_k;
-        let top_p = settings.top_p;
-        let sampling = if temperature <= 0. {
-            Sampling::ArgMax
-        } else {
-            match (top_k, top_p) {
-                (None, None) => Sampling::All { temperature },
-                (Some(k), None) => Sampling::TopK { k, temperature },
-                (None, Some(p)) => Sampling::TopP { p, temperature },
-                (Some(k), Some(p)) => Sampling::TopKThenTopP { k, p, temperature },
-            }
-        };
-        LogitsProcessor::from_sampling(settings.seed, sampling)
     }
 
     fn prompt<'a, C: ToString + AsRef<str>>(&'a mut self, query: &'a str, context: &'a[C], sender: tokio::sync::mpsc::UnboundedSender<String>,)
@@ -363,8 +363,9 @@ impl super::generator_trait::Generator for GeneratorLlama1b
 mod tests
 {
     use std::sync::Arc;
+    use rag_core::EmbeddingConfiguration;
     use tracing::{debug, info};
-    use crate::{EmbeddingConfiguration, logger};
+    use crate::{logger};
     use super::super::generator_trait::Generator;
 
     #[tokio::test]

@@ -2,16 +2,10 @@ mod logger;
 mod error;
 mod retriver;
 mod reranker;
-mod configuration;
 mod model;
 mod generator;
 mod extended_generator;
 mod token_output_stream;
-use serde::{Deserialize, Serialize};
-use tokenizers::Tokenizer;
-use scraper::Node;
-use tracing::info;
-use utilites::Date;
 
 pub use reranker::{BgeReranker};
 pub use retriver::RetriverModel;
@@ -19,4 +13,3 @@ pub use generator::{Generator, GeneratorSettings, GeneratorLlama8b, GeneratorLla
 pub use extended_generator::{ExtendedGenerator, ExtendedGeneratorConfig};
 pub use error::Error;
 pub use model::Model;
-pub use configuration::EmbeddingConfiguration;

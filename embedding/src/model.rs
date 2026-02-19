@@ -1,23 +1,27 @@
 use std::{ops::Deref, sync::Arc};
-use candle_core::Device;
+use candle_core::{Device, Tensor};
 use candle_transformers::models::{bert::{BertModel, Config}};
+use rag_core::EmbeddingConfiguration;
 use serde::{Deserialize, Serialize};
 use tokenizers::Tokenizer;
 use anyhow::Result;
 
-use crate::EmbeddingConfiguration;
-
-pub trait Model<M, C>
+pub trait Model
 where  Self: Sized
 {
     fn name(&self) -> &ModelName;
     fn tokenizer(&self) -> &Tokenizer;
     fn tokenizer_mut(&mut self) -> &mut Tokenizer;
-    fn config(&self) -> &C;
     fn embedding_config(&self) -> Arc<EmbeddingConfiguration>;
     fn device(&self) -> &Device;
     fn load_model(&mut self) -> impl std::future::Future<Output = Result<()>> + Send;
-    fn model(&self) -> Result<&M>;
+    //fn model(&self) -> Result<&M>;
+    fn forward(
+        &self,
+        input_ids: &Tensor,
+        attention_mask: &Tensor,
+        token_type_ids: &Tensor,
+    ) -> Result<Tensor>;
     fn model_is_loaded(&self) -> bool;
     fn unload_model(&mut self);
     ///размерность выходного вектора эмбеддинга

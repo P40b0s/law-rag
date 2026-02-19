@@ -8,6 +8,6 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use crate::error::Result;
 pub use error::Error;
-pub use qdrant::{QdrantPayload, QdrantManager, QdrantConfig, Distance, SearchResult};
+pub use qdrant::{QdrantPayload, QdrantManager, SearchResult};
 pub use documents::{DocumentDbo, DocumentCardDbo, DocumentsTable};
 pub use collections::{CollectionDbo, CollectionsTable};

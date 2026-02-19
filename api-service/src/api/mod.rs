@@ -28,22 +28,20 @@ pub struct EmbeddingRequest
 pub struct GenerationRequest
 {
     query: String,
-    limit: usize,
-    reranker_limit: usize
+    final_limit: usize,
+    per_collection_limit: usize
 }
 #[derive(Debug, Deserialize)]
 pub struct CollectionAddRequest
 {
     name: String,
     description: String,
-    keywords: Vec<String>
 }
 #[derive(Debug, Deserialize)]
 pub struct CollectionUpdateRequest
 {
     id: Uuid,
     description: String,
-    keywords: Vec<String>
 }
 
 pub fn combine_path(path: &'static str) -> String

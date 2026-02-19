@@ -94,9 +94,9 @@ impl DatabaseService
         Ok(collection.into())
     }
 
-    pub async fn update_collection(&self, id: uuid::Uuid, description: &str, keywords: Vec<String>) -> Result<(), Error>
+    pub async fn update_collection(&self, id: uuid::Uuid, description: &str) -> Result<(), Error>
     {
-        let _ = self.collections.update(description, keywords, id).await
+        let _ = self.collections.update(description, id).await
             .inspect_err(|e| error!("{}", e))?;
         Ok(())
     }
@@ -113,9 +113,9 @@ impl DatabaseService
             .inspect_err(|e| error!("{}", e))?;
         Ok(collection.into())
     }
-    pub async fn add_collection(&self, name: &str, description: &str, keywords: Vec<String>) -> Result<Collection, Error>
+    pub async fn add_collection(&self, name: &str, description: &str) -> Result<Collection, Error>
     {
-        let collection = self.collections.create_collection(name, description, keywords).await
+        let collection = self.collections.create_collection(name, description).await
             .inspect_err(|e| error!("{}", e))?;
         Ok(collection.into())
     }

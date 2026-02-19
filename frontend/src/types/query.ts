@@ -21,8 +21,8 @@ const QdrantContextArraySchema = z.array(QdrantContextSchema);
 // Схема для запроса поиска
 const QueryRequestSchema = z.object({
   query: z.string().min(1, "Запрос не может быть пустым"),
-  limit: z.number().int().positive().default(10),
-  reranker_limit: z.number().int().positive().default(5)
+  per_collection_limit: z.number().int().positive().default(10),
+  final_limit: z.number().int().positive().default(5)
 });
 
 // Экспорт типов

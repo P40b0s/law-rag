@@ -90,11 +90,11 @@ mod tests
 {
     use std::sync::Arc;
 
-    use rag_core::{Chunk, ChunkMeta};
+    use rag_core::{Chunk, ChunkMeta, EmbeddingConfiguration};
     use systema_client::{DocumentNode, DocumentNodes};
     use tracing::{debug, info};
     use utilites::Date;
-    use embedding::{EmbeddingConfiguration, RetriverModel};
+    use embedding::{RetriverModel};
     use crate::{chunker::Chunker, splitter::Splitter, systema_actual_chunker, systema_actual_converter::SystemaActualConverter};
 
     #[tokio::test]

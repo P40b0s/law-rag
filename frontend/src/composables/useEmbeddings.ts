@@ -51,18 +51,18 @@ export default function useEmbeddings()
      */
     const generation_request = async (
         query: string,
-        limit: number = 10,
-        reranker_limit: number = 5,
+        per_collection_limit: number = 20,
+        final_limit: number = 10,
        
     ): Promise<boolean> =>
     {
         is_generating.value = true;
         try
         {
-            return await http_service.documents_service.generation_request(
+            return await http_service.query_service.generation_request(
                 query,
-                limit,
-                reranker_limit,
+                per_collection_limit,
+                final_limit,
             );
         }
         finally

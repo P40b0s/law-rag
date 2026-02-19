@@ -12,7 +12,9 @@ mod tests
 {
     use std::sync::Arc;
 
-    use crate::{EmbeddingConfiguration, Generator, GeneratorLlama1b, logger};
+    use rag_core::EmbeddingConfiguration;
+
+    use crate::{Generator, GeneratorLlama1b, logger};
    
     #[tokio::test]
     async fn load_generator()

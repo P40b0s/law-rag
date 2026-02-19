@@ -27,8 +27,7 @@ pub struct Collection
 {
     pub id: Uuid,        
     pub name: String,
-    pub description: String,
-    pub keywords: Vec<String>,
+    pub description: String
 }
 impl ToString for Collection
 {
@@ -54,8 +53,7 @@ impl From<CollectionDbo> for Collection
         { 
             id: value.id,
             name: value.name,
-            description: value.description,
-            keywords: value.keywords,
+            description: value.description
         }   
     }
 }
@@ -68,7 +66,6 @@ impl From<Collection> for CollectionDbo
             id: value.id,
             name: value.name,
             description: value.description,
-            keywords: value.keywords,
         }   
     }
 }

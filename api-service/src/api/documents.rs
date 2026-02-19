@@ -219,7 +219,7 @@ pub async fn generation_request(
 -> Result<Response<Body>, Error>
 {
     let service = app_state.get_services();
-    let search_result = service.documents_service.search_context(&query.query, query.limit, query.reranker_limit).await?;
+    let search_result = service.documents_service.search_context(&query.query, query.per_collection_limit, query.final_limit).await?;
     let _ = service.documents_service.generate_result(&query.query, search_result).await?;
     Ok((
         StatusCode::OK,
@@ -234,7 +234,7 @@ pub async fn search_results(
 -> Result<Response<Body>, Error>
 {
     let service = app_state.get_services();
-    let search_result = service.documents_service.search_context(&query.query, query.limit, query.reranker_limit).await?;
+    let search_result = service.documents_service.search_context(&query.query, query.per_collection_limit, query.final_limit).await?;
     let search_result: Vec<QdrantContext> = search_result.into_iter().map(|v|
     {
         v.into()
@@ -266,7 +266,7 @@ pub async fn add_collection(
 -> Result<Response<Body>, Error>
 {
     let service = app_state.get_services();
-    let collection = service.database_service.add_collection(&req.name, &req.description, req.keywords).await?;
+    let collection = service.database_service.add_collection(&req.name, &req.description).await?;
     Ok((
         StatusCode::OK,
         Json(collection),
@@ -280,7 +280,7 @@ pub async fn update_collection(
 -> Result<Response<Body>, Error>
 {
     let service = app_state.get_services();
-    let _ = service.database_service.update_collection(req.id, &req.description, req.keywords).await?;
+    let _ = service.database_service.update_collection(req.id, &req.description).await?;
     Ok((
         StatusCode::OK,
     ).into_response())

@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use embedding::EmbeddingConfiguration;
 use systema_client::SystemaClient;
 use tracing::error;
 use rag_service::Service;
@@ -23,12 +22,11 @@ pub struct AppState
 
 impl AppState
 {
-    //TODO пробросить все конфигурации через главную
     pub async fn initialize() -> Result<AppState, crate::Error>
     {
         let configuration = Arc::new(Configuration::new()?);
         let sse_service = Arc::new(SSEService::new());
-        let rag_service = Arc::new(Service::new(configuration.embedding_configuration.clone()).await?);
+        let rag_service = Arc::new(Service::new(configuration.embedding_configuration.clone(), configuration.qdrant_configuration.clone()).await?);
         let database_service = Arc::new(DatabaseService::new().await?);
         let systema_client = Arc::new(SystemaClient{});
         let documents_service = Arc::new(DocumentsService::new(rag_service.clone(), database_service.clone(), sse_service.clone(), systema_client));

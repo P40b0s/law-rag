@@ -1,8 +1,8 @@
 use std::{path::{Path, PathBuf}, sync::Arc};
 
 use anyhow::Context;
-use embedding::EmbeddingConfiguration;
 use figment::{Figment, providers::{Env, Format, Toml}};
+use rag_core::{EmbeddingConfiguration, QdrantConfiguration};
 use tracing::info;
 use serde::{Deserialize, Serialize};
 use crate::services::get_local_ip;
@@ -16,6 +16,8 @@ pub struct Configuration
     pub server_port: u16,
     #[serde(default)]
     pub embedding_configuration: Arc<EmbeddingConfiguration>,
+    #[serde(default)]
+    pub qdrant_configuration: Arc<QdrantConfiguration>
 }
 
 

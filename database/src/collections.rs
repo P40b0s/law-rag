@@ -13,7 +13,6 @@ pub struct CollectionDbo
 {
     pub id: Uuid,
     pub name: String,
-    pub keywords: Vec<String>,
     pub description: String,
 }
 
@@ -24,13 +23,10 @@ impl FromRow<'_, SqliteRow> for CollectionDbo
         let id: String =  row.try_get("id")?;
         let name: String =  row.try_get("name")?;
         let description: String =  row.try_get("description")?;
-        let keywords_str: String = row.try_get("keywords")?;
-        let keywords = serde_json::from_str(&keywords_str).unwrap_or_default();
         let obj = CollectionDbo
         {
             id: id.parse().unwrap_or_default(),
             name,
-            keywords,
             description
         };
         Ok(obj)
@@ -51,7 +47,6 @@ impl CollectionsTable
         id TEXT NOT NULL,
         name TEXT NOT NULL UNIQUE,
         description TEXT NOT NULL,
-        keywords TEXT NOT NULL,
         PRIMARY KEY(id)
         );
         CREATE INDEX IF NOT EXISTS 'collection_name_idx' ON collections (name);
@@ -175,7 +170,7 @@ impl CollectionsTable
             Ok(())
         })
     }
-    pub fn update<'a>(&'a self, description: &'a str, keywords: Vec<String>, id: Uuid) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>
+    pub fn update<'a>(&'a self, description: &'a str, id: Uuid) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>
     {
         Box::pin(async move 
         {
@@ -183,14 +178,12 @@ impl CollectionsTable
             let sql = [
                 "UPDATE  "
                 ,Self::name()
-                ," SET description = ?, keywords = ? "
+                ," SET description = ?"
                 ," WHERE "
                 ,"id = ?"
             ].concat();
-            let keywords_str = serde_json::to_string(&keywords).unwrap_or_default();
             let _ = sqlx::query(&sql)
             .bind(description)
-            .bind(keywords_str)
             .bind(id.to_string())
             .execute(&*connection).await
                 .context(format!("Error when updating collection {}", id))?;
@@ -201,8 +194,7 @@ impl CollectionsTable
     pub fn create_collection<'a>(
         &'a self,
         name: &'a str,
-        description: &'a str,
-        keywords: Vec<String>,
+        description: &'a str
         ) -> Pin<Box<dyn Future<Output = Result<CollectionDbo>> + Send + 'a>>
     {
         Box::pin(async move 
@@ -213,21 +205,18 @@ impl CollectionsTable
                 id: Uuid::now_v7(),
                 name: name.to_string(),
                 description: description.to_string(),
-                keywords
             };
             let sql = [
                 "INSERT INTO "
                 ,Self::name()
                 ," ("
-                ,"id, name, description, keywords"
-                ,") VALUES (?,?,?,?)"
+                ,"id, name, description"
+                ,") VALUES (?,?,?)"
             ].concat();
-            let keywords_str = serde_json::to_string(&collection.keywords).unwrap_or_default();
             let _ = sqlx::query(&sql)
             .bind(collection.id.to_string())
             .bind(name)
             .bind(description)
-            .bind(keywords_str)
             .execute(&*connection).await?;
             Ok(collection)
         })

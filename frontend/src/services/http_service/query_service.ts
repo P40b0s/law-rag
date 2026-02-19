@@ -6,34 +6,34 @@ import { QdrantContext, QdrantContextArraySchema } from '@/types/query';
 // Типы запросов
 interface QueryRequest {
     query: string;
-    limit: number;
-    reranker_limit: number;
+    per_collection_limit: number;
+    final_limit: number;
 }
 
 interface GenerationRequest
 {
     query: string;
-    limit: number;
-    reranker_limit: number;
+    per_collection_limit: number;
+    final_limit: number;
 }
 
 class QueryService {
     /**
      * Поиск контекста по запросу пользователя
      * @param query - текст запроса
-     * @param limit - максимальное количество результатов для поиска
-     * @param reranker_limit - максимальное количество результатов после реранкинга
+     * @param per_collection_limit - максимальное количество результатов для поиска в каждой коллекции
+     * @param final_limit - максимальное количество результатов после реранкинга
      * @returns массив найденных контекстов или undefined в случае ошибки
      */
     async search_results(
         query: string,
-        limit: number = 10,
-        reranker_limit: number = 5
+        per_collection_limit: number = 20,
+        final_limit: number = 10
     ): Promise<QdrantContext[] | undefined> {
         const payload: QueryRequest = {
             query,
-            limit,
-            reranker_limit
+            per_collection_limit,
+            final_limit
         };
 
         const result: Result<QdrantContext[], HTTPError> = await post(
@@ -66,12 +66,12 @@ class QueryService {
     /**
      * Генерация ответа на основе поискового запроса с указанием коллекций
      */
-    async generation_request(query: string, limit: number = 10, reranker_limit: number = 5): Promise<boolean> {
+    async generation_request(query: string, per_collection_limit: number = 20, final_limit: number = 10): Promise<boolean> {
         const payload: GenerationRequest =
         {
             query,
-            limit,
-            reranker_limit
+            per_collection_limit,
+            final_limit
         };
 
         const result: Result<void, HTTPError> = await post(

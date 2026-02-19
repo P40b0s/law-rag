@@ -3,6 +3,7 @@ mod error;
 mod document;
 mod search;
 mod service;
+mod working_models;
 use serde::{Deserialize, Serialize};
 use scraper::Node;
 use tracing::info;
@@ -16,8 +17,7 @@ mod tests
 {
     use std::sync::Arc;
 
-    use database::QdrantConfig;
-    use embedding::{EmbeddingConfiguration, Model};
+    use embedding::{Model};
     use tracing::{debug, info};
     use utilites::Date;
 

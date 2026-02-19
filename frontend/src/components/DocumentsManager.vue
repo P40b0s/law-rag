@@ -27,12 +27,21 @@
             template(#prefix)
               n-icon(:component="DocumentTextOutline")
 
+      n-form-item(label="Коллекция" path="collection_id")
+        n-select(
+          v-model:value="formData.collection_id"
+          :options="collectionOptions"
+          placeholder="Выберите коллекцию"
+          :loading="collectionsLoading"
+          clearable
+        )
+
       n-space.actions(:justify="'end'")
         n-button(
           type="primary"
           size="large"
           :loading="isLoading"
-          :disabled="!formData.sign_date || !formData.number"
+          :disabled="!formData.sign_date || !formData.number || !formData.collection_id"
           @click="handleRequestDocument"
         )
           template(#icon)
@@ -139,6 +148,7 @@ import {
   NCard,
   NForm,
   NFormItemGi,
+  NFormItem,
   NGrid,
   NInput,
   NDatePicker,
@@ -146,6 +156,7 @@ import {
   NSpace,
   NIcon,
   NTag,
+  NSelect,
   NDescriptions,
   NDescriptionsItem,
   NText,
@@ -170,25 +181,23 @@ import {
   HelpCircleOutline
 } from '@vicons/ionicons5'
 import useEmbeddings from '@/composables/useEmbeddings'
+import useCollections from '@/composables/useCollections'
+import useDocuments from '@/composables/useDocuments'
 import { notify_service } from '@/services/notification_service'
-import type { Document, DocumentStatus } from '@/types/document'
+import type { DocumentStatus } from '@/types/document'
 import { DateTime } from '@/services/date'
 
 // Composables
-const {
-  get_document,
-  get_loading,
-  get_embedding,
-  request_document,
-  embedding_current_document,
-  clear_document
-} = useEmbeddings()
+const { get_loading, get_embedding, request_document, embedding_document } = useEmbeddings()
+const { collectionOptions, loading: collectionsLoading } = useCollections()
+const { currentDocument, addOrUpdateDocument, clearCurrentDocument } = useDocuments()
 
 // Reactive state
 const formRef = ref<FormInst | null>(null)
 const formData = ref({
   sign_date: null as number | null,
-  number: ''
+  number: '',
+  collection_id: null as string | null
 })
 
 // Form rules
@@ -203,11 +212,16 @@ const formRules: FormRules = {
     required: true,
     message: 'Введите номер документа',
     trigger: ['input', 'blur']
+  },
+  collection_id: {
+    type: 'string',
+    required: true,
+    message: 'Выберите коллекцию',
+    trigger: 'change'
   }
 }
 
 // Computed
-const currentDocument = computed(() => get_document().value)
 const isLoading = computed(() => get_loading().value)
 const isEmbedding = computed(() => get_embedding().value)
 
@@ -218,25 +232,18 @@ const handleRequestDocument = async () => {
   try {
     await formRef.value.validate()
 
-    if (!formData.value.sign_date || !formData.value.number) {
-      notify_service.warning('Заполните все поля', 'Необходимо указать дату подписания и номер документа')
+    if (!formData.value.sign_date || !formData.value.number || !formData.value.collection_id) {
+      notify_service.warning('Заполните все поля', 'Необходимо указать дату, номер и коллекцию')
       return
     }
 
-    // Конвертируем timestamp в формат DateTime
     const date = new Date(formData.value.sign_date)
-    const dateTime = DateTime.parse(date);
-    //   year: date.getFullYear(),
-    //   month: date.getMonth() + 1,
-    //   day: date.getDate(),
-    //   hour: 0,
-    //   minute: 0,
-    //   second: 0
-    // }
+    const dateTime = DateTime.parse(date)
 
-    const success = await request_document(dateTime, formData.value.number)
+    const doc = await request_document(dateTime, formData.value.number, formData.value.collection_id)
 
-    if (success) {
+    if (doc) {
+      addOrUpdateDocument(doc)
       notify_service.success('Документ найден', 'Документ успешно загружен с сервера')
     }
   } catch (error) {
@@ -247,7 +254,10 @@ const handleRequestDocument = async () => {
 const handleCreateEmbeddings = async () => {
   if (!currentDocument.value) return
 
-  const success = await embedding_current_document()
+  const success = await embedding_document(
+    currentDocument.value.document_hash,
+    currentDocument.value.collection_id
+  )
 
   if (success) {
     notify_service.success('Эмбеддинги созданы', 'Эмбеддинги для документа успешно созданы')
@@ -255,16 +265,16 @@ const handleCreateEmbeddings = async () => {
 }
 
 const handleClearDocument = () => {
-  clear_document()
+  clearCurrentDocument()
   formData.value = {
     sign_date: null,
-    number: ''
+    number: '',
+    collection_id: null
   }
 }
 
 const formatDate = (dateTime: any): string => {
   if (!dateTime) return 'Не указана'
-
   const { day, month, year } = dateTime
   return `${String(day).padStart(2, '0')}.${String(month).padStart(2, '0')}.${year}`
 }

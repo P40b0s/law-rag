@@ -1,10 +1,10 @@
 use std::sync::{Arc, OnceLock};
 
-use crate::{EmbeddingConfiguration, model::{Model, ModelName}};
+use crate::{model::{Model, ModelName}};
 use anyhow::{Context, Result, anyhow};
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
-use rag_core::RerankResult;
+use rag_core::{EmbeddingConfiguration, RerankResult, Reranker};
 use tokenizers::{PaddingParams, Tokenizer};
 use tracing::info;
 use candle_transformers::models::xlm_roberta::{XLMRobertaForSequenceClassification, Config};
@@ -30,13 +30,13 @@ pub struct BgeReranker
 {
     model_name: ModelName,
     device: Device,
-    config: Config,
+    model_config: Config,
     embedding_config: Arc<EmbeddingConfiguration>,
     tokenizer: Tokenizer,
     model: Option<XLMRobertaForSequenceClassification>
 }
 
-impl Model<XLMRobertaForSequenceClassification, Config> for BgeReranker
+impl Model for BgeReranker
 {
     fn name(&self) -> &ModelName 
     {
@@ -53,10 +53,6 @@ impl Model<XLMRobertaForSequenceClassification, Config> for BgeReranker
         &mut self.tokenizer
     }
 
-    fn config(&self) -> &Config 
-    {
-        &self.config
-    }
     fn embedding_config(&self) -> Arc<EmbeddingConfiguration> 
     {
         Arc::clone(&self.embedding_config)
@@ -80,7 +76,7 @@ impl Model<XLMRobertaForSequenceClassification, Config> for BgeReranker
         if self.model.is_none()
         {
             let start = std::time::Instant::now();
-            let config = self.config().clone();
+            let config = self.model_config.clone();
             let model_name = self.model_name.as_ref().to_owned();
             let device = self.device().clone();
             let emb_cfg = self.embedding_config();
@@ -112,11 +108,22 @@ impl Model<XLMRobertaForSequenceClassification, Config> for BgeReranker
     {
         self.model = None;
     }
-    fn model(&self) -> Result<&XLMRobertaForSequenceClassification>
+    fn forward(
+            &self,
+            input_ids: &Tensor,
+            attention_mask: &Tensor,
+            token_type_ids: &Tensor,
+        ) -> Result<Tensor> 
     {
-        let model = self.model.as_ref()
-            .context(format!("Model {} is not initialized!", self.model_name.as_ref()))?;
-        Ok(model)
+        if let Some(model) = self.model.as_ref()
+        {
+            let tensor = model.forward(input_ids, attention_mask, token_type_ids)?;
+            Ok(tensor)
+        }
+        else
+        {
+            Err(anyhow!("Model {} is not initialized!", self.model_name.as_ref()))
+        }
     }
 }
 
@@ -146,11 +153,11 @@ impl BgeReranker
         let model_config_file = &emb_config.reranker_config_path;
         let model_config = tokio::fs::read(&model_config_file).await
             .context(format!("Error load config file from {}", model_config_file.display()))?;
-        let config = serde_json::from_slice(&model_config).context("Error deserialize config file")?;
+        let model_config = serde_json::from_slice(&model_config).context("Error deserialize config file")?;
         let slf = Self
         {
             model_name: ModelName::RerankerM3,
-            config,
+            model_config,
             embedding_config: emb_config,
             device,
             tokenizer,
@@ -224,8 +231,12 @@ impl BgeReranker
         info!("Реранкинг {} кандидатов завершен за {:?}", 
               reranked.len(), start.elapsed());
         
-        // Возврат топ-K результатов
-        Ok(reranked.into_iter().take(top_k).collect())
+        let min_score = self.embedding_config.min_reranking_score;
+        // Возврат топ-K результатов с фильтрацией по минимальному скору
+        Ok(reranked.into_iter()
+            .filter(|r| r.score >= min_score)
+            .take(top_k)
+            .collect())
     }
     
     /// Вычисляет скоры релевантности для батча пар (query, document).
@@ -282,7 +293,7 @@ impl BgeReranker
         
         // Прямой проход через XLM-RoBERTa classifier
         // output shape: [batch_size, num_labels] (для реранкинга num_labels=1)
-        let logits = self.model()?.forward(&token_ids, &attention_mask, &token_type_ids)?;
+        let logits = self.forward(&token_ids, &attention_mask, &token_type_ids)?;
 
         // Извлечение скоров (логитов) из тензора
         // Для sequence classification с 1 label: [batch_size, 1] -> [batch_size]
@@ -302,14 +313,69 @@ impl BgeReranker
     }
 }
 
+
+impl Reranker for BgeReranker
+{
+    fn rerank<P: AsRef<str> + ToString + Send + Sync, R: Send + Sync>(
+            &self,
+            query: &str,
+            candidates: R,
+            top_k: usize,
+        ) -> impl std::future::Future<Output = anyhow::Result<Vec<RerankResult<P>>>> + Send
+        where R: IntoIterator<Item = P> 
+    {
+        async move
+        {
+
+            let start = std::time::Instant::now();
+            let candidate_vec: Vec<P> = candidates.into_iter().collect();
+            // Подготовка пар для реранкинга (query, document)
+            let pairs: Vec<(String, String)> = candidate_vec
+                .iter()
+                .map(|candidate|
+                {
+                    (query.to_string(), candidate.as_ref().to_owned())
+                })
+                .collect();
+            
+            // Получение скорингов
+            let scores = self.compute_scores_batch(&pairs).await?;
+            
+            // Формирование результатов
+            let mut reranked: Vec<RerankResult<P>> = candidate_vec.into_iter()
+                .zip(scores.into_iter())
+                .map(|(candidate, score)| RerankResult 
+                {
+                    score,
+                    db_object: candidate,
+                })
+                .collect();
+            
+            // Сортировка по новым скорингам
+            reranked.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+            
+            info!("Реранкинг {} кандидатов завершен за {:?}", 
+                reranked.len(), start.elapsed());
+            
+            let min_score = self.embedding_config.min_reranking_score;
+            // Возврат топ-K результатов с фильтрацией по минимальному скору
+            Ok(reranked.into_iter()
+                .filter(|r| r.score >= min_score)
+                .take(top_k)
+                .collect())
+            }
+    }
+}
+
 #[cfg(test)]
 mod tests
 {
     use std::sync::Arc;
 
+    use rag_core::EmbeddingConfiguration;
     use tracing::info;
 
-    use crate::{EmbeddingConfiguration, logger};
+    use crate::{logger};
 
     #[tokio::test]
     async fn test_reranker()
