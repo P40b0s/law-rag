@@ -28,6 +28,15 @@ impl Service
 {
     pub async fn new(emb_cfg: Arc<EmbeddingConfiguration>, qdrant_cfg: Arc<QdrantConfiguration>) -> Result<Self, Error>
     {
+         // let generator = GeneratorImpl::load(Arc::clone(&emb_cfg))
+        //     .inspect_err(|e| error!("Error when loading generator `{}`", e))
+        //     .map_err(|e| Error::ModelLoadError { model: "generator".to_owned(), source: e })?;
+        // let retriver = RetriverImpl::new(Arc::clone(&emb_cfg)).await
+        //     .inspect_err(|e| error!("Error when loading retriver model `{}`", e))
+        //     .map_err(|e| Error::ModelLoadError { model: "retriver".to_owned(), source: e })?;
+        // let reranker = RerankerImpl::new(Arc::clone(&emb_cfg)).await
+        //     .inspect_err(|e| error!("Error when loading reranker model `{}`", e))
+        //     .map_err(|e| Error::ModelLoadError { model: "reranker".to_owned(), source: e })?;
         let models = WorkingModels::new(emb_cfg.clone()).await?;
         let qdrant_manager = QdrantManager::new(Arc::clone(&qdrant_cfg), Arc::clone(&emb_cfg))?;
         let slf = Self

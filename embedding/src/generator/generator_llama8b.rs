@@ -203,7 +203,6 @@ impl GeneratorLlama8b
 impl super::generator_trait::Generator for GeneratorLlama8b
 {
 
-    
     async fn load_model(&mut self) -> anyhow::Result<()> {
         if self.model.is_some() {
             return Ok(());

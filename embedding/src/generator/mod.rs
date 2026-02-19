@@ -2,10 +2,12 @@
 mod generator_trait;
 mod generator_llama8b;
 mod generator_llama1b;
+mod generators;
 
 pub use generator_trait::{Generator, GeneratorSettings};
 pub use generator_llama8b::GeneratorLlama8b;
 pub use generator_llama1b::GeneratorLlama1b;
+pub use generators::Generators;
 
 #[cfg(test)]
 mod tests

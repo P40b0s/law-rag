@@ -1,15 +1,16 @@
 use std::sync::Arc;
 
-use embedding::{BgeReranker, Generator, GeneratorLlama1b, Model, RetriverModel};
+use embedding::{BgeReranker, Generator, GeneratorLlama1b, Generators, Model, RetriverModel};
 use rag_core::{Embedder, EmbeddingConfiguration, Encoder, Reranker};
 use tokio::sync::RwLock;
 use tracing::error;
 
 use crate::Error;
-
 type RetriverImpl = RetriverModel;
-type GeneratorImpl = GeneratorLlama1b;
+type GeneratorImpl = Generators;
 type RerankerImpl = BgeReranker;
+///Для замены модели, необходимо имплементировать для нее нужные трейты и заменить здесь псевдоним
+///ну и возможно создание экземпляра в new
 pub struct WorkingModels
 {
     retriver: RwLock<RetriverImpl>,
@@ -18,11 +19,22 @@ pub struct WorkingModels
 }
 impl WorkingModels
 {
+    //TODO сделать загрузку генератора в зависимости от текущих настроек!
     pub async fn new(emb_cfg: Arc<EmbeddingConfiguration>) -> Result<Self, Error>
     {
-        let generator = GeneratorImpl::load(Arc::clone(&emb_cfg))
-            .inspect_err(|e| error!("Error when loading generator `{}`", e))
+        let generator = if emb_cfg.dimension > 100
+        {
+            GeneratorImpl::load_llama1b(emb_cfg.clone())
+        }
+        else
+        {
+            GeneratorImpl::load_llama1b(emb_cfg.clone())
+        };
+        let generator =  generator.inspect_err(|e| error!("Error when loading generator `{}`", e))
             .map_err(|e| Error::ModelLoadError { model: "generator".to_owned(), source: e })?;
+        // let generator = GeneratorImpl::load(Arc::clone(&emb_cfg))
+        //     .inspect_err(|e| error!("Error when loading generator `{}`", e))
+        //     .map_err(|e| Error::ModelLoadError { model: "generator".to_owned(), source: e })?;
         let retriver = RetriverImpl::new(Arc::clone(&emb_cfg)).await
             .inspect_err(|e| error!("Error when loading retriver model `{}`", e))
             .map_err(|e| Error::ModelLoadError { model: "retriver".to_owned(), source: e })?;

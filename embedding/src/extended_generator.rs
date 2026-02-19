@@ -2,7 +2,8 @@ use anyhow::{Context, Result, anyhow};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
+use crate::generator::Generator;
 
 /// Конфигурация для подключения к внешнему inference-серверу (llama.cpp, Ollama, vLLM).
 /// Сервер должен предоставлять OpenAI-совместимый API.
@@ -113,6 +114,7 @@ pub struct ExtendedGenerator
     client: reqwest::Client,
     config: ExtendedGeneratorConfig,
     system_prompt: String,
+    is_connected: bool,
 }
 
 impl ExtendedGenerator
@@ -133,6 +135,7 @@ impl ExtendedGenerator
                 должно звучать так: `На основе имеющейся у меня информации: {далее идет твой ответ}`. \
                 Если в контексте нет информации, скажи: \"Не могу ответить на основе имеющейся информации\""
                 .to_owned(),
+            is_connected: false,
         }
     }
 
@@ -319,6 +322,69 @@ impl ExtendedGenerator
     }
 }
 
+impl Generator for ExtendedGenerator
+{
+    /// Проверяет доступность сервера и кэширует результат в is_connected.
+    fn load_model(&mut self) -> impl std::future::Future<Output = Result<()>> + Send
+    {
+        async move
+        {
+            self.is_connected = self.health_check().await;
+            if self.is_connected
+            {
+                Ok(())
+            }
+            else
+            {
+                Err(anyhow!("External inference server is not reachable at {}", self.config.base_url))
+            }
+        }
+    }
+
+    fn unload_model(&mut self)
+    {
+        self.is_connected = false;
+    }
+
+    /// Возвращает кэшированное состояние — актуально после load_model().
+    fn model_is_loaded(&self) -> bool
+    {
+        self.is_connected
+    }
+
+    /// Модель находится на удалённом сервере, поэтому размер неизвестен.
+    fn get_size_in_bytes(&self) -> usize
+    {
+        0
+    }
+
+    fn get_system_prompt(&self) -> &str
+    {
+        &self.system_prompt
+    }
+
+    /// Блокирующий мост к async prompt.
+    ///
+    /// Трейт требует синхронного `fn prompt`, но логика — HTTP-запрос.
+    /// `block_in_place` паркует текущий поток tokio и позволяет безопасно
+    /// вызвать `block_on` внутри уже выполняющегося рантайма.
+    /// Вызов `self.prompt(...)` разрешается в inherent async-метод
+    /// (приоритет inherent > trait при разрешении имён).
+    fn prompt<'a, C: ToString + AsRef<str>>(
+        &'a mut self,
+        query: &'a str,
+        context: &'a [C],
+        sender: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<()>
+    {
+        tokio::task::block_in_place(||
+        {
+            tokio::runtime::Handle::current().block_on(
+                ExtendedGenerator::prompt(self, query, context, sender)
+            )
+        })
+    }
+}
 
 
 // prompt() — async, не нужен &mut self, не блокирует ничего
