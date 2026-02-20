@@ -1,118 +1,298 @@
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::{fmt::Display, path::PathBuf, str::FromStr};
+use anyhow::anyhow;
+/// Имя модели с типом
+#[derive(Deserialize, Clone, Debug, Serialize, PartialEq)]
+pub enum ModelName
+{
+    BgeM3,
+    BgeRerankerV2M3,
+    Llama1b,
+    Llama8b,
+    Qwen32b
+}
+
+impl AsRef<str> for ModelName
+{
+    fn as_ref(&self) -> &str 
+    {
+        match self
+        {
+            ModelName::BgeM3 => "BAAI/bge-m3",
+            ModelName::BgeRerankerV2M3 => "BAAI/bge-reranker-v2-m3",
+            ModelName::Llama1b => "meta-llama/Llama-3.2-1B-Instruct" ,
+            ModelName::Llama8b => "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+            ModelName::Qwen32b =>  "Qwen/Qwen2.5-32B-Instruct"
+        }
+    }
+}
+impl Display for ModelName
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result 
+    {
+        f.write_str(self.as_ref())
+    }
+}
+
+impl FromStr for ModelName 
+{
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> 
+    {
+        match s 
+        {
+            "meta-llama/Llama-3.2-1B-Instruct" => Ok(ModelName::Llama1b),
+            "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF" => Ok(ModelName::Llama8b),
+            "Qwen/Qwen2.5-32B-Instruct" => Ok(ModelName::Qwen32b),
+            "BAAI/bge-reranker-v2-m3" => Ok(ModelName::BgeRerankerV2M3),
+            "BAAI/bge-m3" => Ok(ModelName::BgeM3),
+            _ => Err(anyhow!("Модель {} не определена в конфигурационном файле", s))
+        }
+    }    
+}
+impl ModelName
+{
+    pub fn retriver_bgem3() -> Self
+    {
+        Self::BgeM3
+    }
+    pub fn reranker_bge_v2_m3() -> Self
+    {
+        Self::BgeRerankerV2M3
+    }
+    pub fn generator_llama_1b() -> Self
+    {
+        Self::Llama1b
+    }
+    pub fn generator_llama_8b() -> Self
+    {
+        Self::Llama8b
+    }
+    pub fn generator_external() -> Self
+    {
+        Self::Qwen32b
+    }
+}
+
+/// Пути к файлам локальной модели (weights, config, tokenizer) + идентификатор.
+#[derive(Deserialize, Clone, Debug, Serialize)]
+pub struct LocalModelConfig
+{
+    #[serde(deserialize_with="model_name_deserializer")]
+    pub name:           ModelName,
+    pub model_file:     String,
+    pub model_path:     PathBuf,
+    pub config_path:    PathBuf,
+    pub tokenizer_path: PathBuf,
+    //на случай если известно и нужно
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dimension: Option<usize>,
+}
+
+fn model_name_deserializer<'de, D>(deserializer: D) -> Result<ModelName, D::Error>
+where D: Deserializer<'de>
+{
+    let s = String::deserialize(deserializer)?;
+    s.parse::<ModelName>().map_err(serde::de::Error::custom)
+}
+
+/// Конфигурация конкретного генератора — локальная модель или внешний сервер.
+#[derive(Deserialize, Clone, Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum GeneratorConfig
+{
+    /// Llama 3.2 1B (локальный, safetensors)
+    Llama1b(LocalModelConfig),
+    /// Llama 3.1 8B (локальный, gguf)
+    Llama8b(LocalModelConfig),
+    /// Внешний OpenAI-совместимый сервер (llama.cpp, Ollama, vLLM)
+    External
+    {
+        name:     ModelName,
+        base_url: String,
+    },
+}
+
+impl GeneratorConfig
+{
+    pub fn name(&self) -> &ModelName
+    {
+        match self
+        {
+            Self::Llama1b(cfg) 
+            | Self::Llama8b(cfg) => &cfg.name,
+            Self::External { name, .. }             => name,
+        }
+    }
+
+    pub fn model_path(&self) -> Option<&PathBuf>
+    {
+        match self
+        {
+            Self::Llama1b(cfg) 
+            | Self::Llama8b(cfg) => Some(&cfg.model_path),
+            Self::External { .. }                   => None,
+        }
+    }
+
+    pub fn config_path(&self) -> Option<&PathBuf>
+    {
+        match self
+        {
+            Self::Llama1b(cfg) 
+            | Self::Llama8b(cfg) => Some(&cfg.config_path),
+            Self::External { .. }                   => None,
+        }
+    }
+
+    pub fn tokenizer_path(&self) -> Option<&PathBuf>
+    {
+        match self
+        {
+            Self::Llama1b(cfg) 
+            | Self::Llama8b(cfg) => Some(&cfg.tokenizer_path),
+            Self::External { .. }                   => None,
+        }
+    }
+}
 
 #[derive(Deserialize, Clone, Debug, Serialize)]
-pub struct EmbeddingConfiguration 
+pub struct EmbeddingConfiguration
 {
-    #[serde(default = "reranker_model_path")]
-    pub reranker_model_path: PathBuf,
-    #[serde(default = "reranker_config_path")]
-    pub reranker_config_path: PathBuf,
-    #[serde(default = "reranker_tokenizer_path")]
-    pub reranker_tokenizer_path: PathBuf,
-    
-    #[serde(default = "retriver_model_path")]
-    pub retriver_model_path: PathBuf,
-    #[serde(default = "retriver_config_path")]
-    pub retriver_config_path: PathBuf,
-    #[serde(default = "retriver_tokenizer_path")]
-    pub retriver_tokenizer_path: PathBuf,
+    /// Доступные reranker-модели
+    #[serde(default = "default_rerankers")]
+    pub rerankers: Vec<LocalModelConfig>,
 
-    #[serde(default = "generator_model_path")]
-    pub generator_model_path: PathBuf,
-    #[serde(default = "generator_config_path")]
-    pub generator_config_path: PathBuf,
-    #[serde(default = "generator_tokenizer_path")]
-    pub generator_tokenizer_path: PathBuf,
-    #[serde(default = "system_prompt")]
-    pub system_prompt: String,
-    #[serde(default = "embedding_batch_size")]
-    /// Размер мини-батча для генерации эмбеддингов.
-    /// Несколько чанков обрабатываются за один forward pass через модель.
+    /// Доступные retriever-модели
+    #[serde(default = "default_retrievers")]
+    pub retrievers: Vec<LocalModelConfig>,
+
+    /// Доступные генераторы
+    #[serde(default = "default_generators")]
+    pub generators: Vec<GeneratorConfig>,
+
+    /// Размер мини-батча для эмбеддингов
+    #[serde(default = "default_embedding_batch_size")]
     pub embedding_batch_size: usize,
-    #[serde(default = "embedding_batch_size")]
-    /// Обычно для BERT hidden_size = 1024, но может отличаться в зависимости от модели
-    pub dimension: usize,
-    /// минимальный скор для выдачи реранкера
-    #[serde(default = "min_reranking_score")]
+
+    /// Минимальный score реранкера для выдачи результата
+    #[serde(default = "default_min_reranking_score")]
     pub min_reranking_score: f32,
+
+    /// Системный промпт для генератора
+    #[serde(default = "default_system_prompt")]
+    pub system_prompt: String,
+    /// Температура генератора
+    #[serde(default = "default_generator_temperature")]
+    pub generator_temperature: f64,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub extended_generator_url: Option<String>
+
 }
 
-fn reranker_model_path() -> PathBuf 
+impl EmbeddingConfiguration
 {
-    Path::new("/home/phobos/projects/rust/law-rag/model/reranker/model.safetensors").to_path_buf()
-}
-fn reranker_config_path() -> PathBuf 
-{
-    Path::new("/home/phobos/projects/rust/law-rag/model/reranker/config.json").to_path_buf()
-}
-fn reranker_tokenizer_path() -> PathBuf 
-{
-    Path::new("/home/phobos/projects/rust/law-rag/model/reranker/tokenizer.json").to_path_buf()
+    pub fn find_retriever(&self, name: &ModelName) -> anyhow::Result<&LocalModelConfig>
+    {
+        self.retrievers.iter().find(|r| &r.name == name)
+            .ok_or(anyhow!("Модель {} отсуствует в текущей конфигурации", name))
+    }
+
+    pub fn find_reranker(&self, name: &ModelName) -> anyhow::Result<&LocalModelConfig>
+    {
+        self.rerankers.iter().find(|r| &r.name == name)
+            .ok_or(anyhow!("Модель {} отсуствует в текущей конфигурации", name))
+    }
+
+    pub fn find_generator(&self, name: &ModelName) -> anyhow::Result<&GeneratorConfig>
+    {
+        self.generators.iter().find(|r| r.name() == name)
+            .ok_or(anyhow!("Модель {} отсуствует в текущей конфигурации", name))
+    }
 }
 
-fn retriver_model_path() -> PathBuf 
+// ── defaults ─────────────────────────────────────────────────────────────────
+
+fn default_rerankers() -> Vec<LocalModelConfig>
 {
-    Path::new("/home/phobos/projects/rust/law-rag/model/pytorch_model.bin").to_path_buf()
-}
-fn retriver_config_path() -> PathBuf 
-{
-    Path::new("/home/phobos/projects/rust/law-rag/model/config.json").to_path_buf()
-}
-fn retriver_tokenizer_path() -> PathBuf 
-{
-    Path::new("/home/phobos/projects/rust/law-rag/model/tokenizer.json").to_path_buf()
+    vec![LocalModelConfig
+    {
+        name:           ModelName::BgeRerankerV2M3,
+        model_file:     "model.safetensors".to_owned(),
+        model_path:     PathBuf::from("/home/phobos/projects/rust/law-rag/model/reranker/model.safetensors"),
+        config_path:    PathBuf::from("/home/phobos/projects/rust/law-rag/model/reranker/config.json"),
+        tokenizer_path: PathBuf::from("/home/phobos/projects/rust/law-rag/model/reranker/tokenizer.json"),
+        dimension:      Some(1), // Реранкеры обычно возвращают один скор релевантности на пару (query, document)
+    }]
 }
 
-fn generator_model_path() -> PathBuf 
+fn default_retrievers() -> Vec<LocalModelConfig>
 {
-    Path::new("/home/phobos/projects/rust/law-rag/model/generator/llama3/1b/model.safetensors").to_path_buf()
+    vec![LocalModelConfig
+    {
+        name:           ModelName::BgeM3,
+        model_file:     "pytorch_model.bin".to_owned(),
+        model_path:     PathBuf::from("/home/phobos/projects/rust/law-rag/model/pytorch_model.bin"),
+        config_path:    PathBuf::from("/home/phobos/projects/rust/law-rag/model/config.json"),
+        tokenizer_path: PathBuf::from("/home/phobos/projects/rust/law-rag/model/tokenizer.json"),
+        dimension:      None, //берется из конфигурации модели из поля hidden_size
+    }]
 }
-fn generator_config_path() -> PathBuf 
+
+fn default_generators() -> Vec<GeneratorConfig>
 {
-    Path::new("/home/phobos/projects/rust/law-rag/model/generator/llama3//1b/config.json").to_path_buf()
+    vec![
+        GeneratorConfig::Llama1b(LocalModelConfig
+        {
+            name:           ModelName::Llama1b,
+            model_file:     "model.safetensors".to_owned(),
+            model_path:     PathBuf::from("/home/phobos/projects/rust/law-rag/model/generator/llama3/1b/model.safetensors"),
+            config_path:    PathBuf::from("/home/phobos/projects/rust/law-rag/model/generator/llama3/1b/config.json"),
+            tokenizer_path: PathBuf::from("/home/phobos/projects/rust/law-rag/model/generator/llama3/1b/tokenizer.json"),
+            dimension:      None,
+        }),
+        GeneratorConfig::Llama8b(LocalModelConfig
+        {
+            name:           ModelName::Llama8b,
+            model_file:     "model-q4_K.gguf".to_owned(),
+            model_path:     PathBuf::from("/home/phobos/projects/rust/law-rag/model/generator/llama3/model-q4_K.gguf"),
+            config_path:    PathBuf::from("/home/phobos/projects/rust/law-rag/model/generator/llama3/config.json"),
+            tokenizer_path: PathBuf::from("/home/phobos/projects/rust/law-rag/model/generator/llama3/tokenizer.json"),
+            dimension:      None,
+        }),
+    ]
 }
-fn generator_tokenizer_path() -> PathBuf 
+
+fn default_generator_temperature() -> f64 { 0.1 }
+fn default_embedding_batch_size() -> usize { 8 }
+fn default_min_reranking_score()  -> f32   { 0.7 }
+
+fn default_system_prompt() -> String
 {
-    Path::new("/home/phobos/projects/rust/law-rag/model/generator/llama3/1b/tokenizer.json").to_path_buf()
-}
-fn system_prompt() -> String
-{
-    "Ты - высококвалифицированный юрист, который специализируется на российском законодательстве. Ты помогаешь людям находить ответы на их вопросы, используя свои обширные знания законов и нормативных актов. Ты всегда предоставляешь точные и подробные ответы, ссылаясь на конкретные статьи и пункты законодательства. Ты также можешь объяснять сложные юридические концепции простым языком, чтобы помочь людям лучше понять их права и обязанности. Твоя цель - помочь людям разобраться в их юридических вопросах и предоставить им полезную информацию. В конце добавь ссылки на документы откуда ты взял информацию, а так же полный путь откуда взята информация (пнкт подпункт статья итд.)  Ответ выдавай в mardown формате".to_owned()
-}
-//"Ты - ассистент RAG системы, ты должен отвечать на вопросы пользователей используя ТОЛЬКО предоставленный контекст для формирования ответа. начало ответа должно звучать так: `На основе имеющейся у меня информации: {далее идет твой ответ}`.  Если в контексте нет информации, скажи: \"Не могу ответить на основе имеющейся информации\"".to_owned(),
-fn embedding_batch_size() -> usize
-{
-    8
-}
-fn dimension() -> usize
-{
-    1024
-}
-fn min_reranking_score() -> f32
-{
-    0.7
+    "Ты - высококвалифицированный юрист, который специализируется на российском законодательстве. \
+     Ты помогаешь людям находить ответы на их вопросы, используя свои обширные знания законов и \
+     нормативных актов. Ты всегда предоставляешь точные и подробные ответы, ссылаясь на конкретные \
+     статьи и пункты законодательства. Ты также можешь объяснять сложные юридические концепции \
+     простым языком, чтобы помочь людям лучше понять их права и обязанности. Твоя цель - помочь \
+     людям разобраться в их юридических вопросах и предоставить им полезную информацию. В конце \
+     добавь ссылки на документы откуда ты взял информацию, а так же полный путь откуда взята \
+     информация (пнкт подпункт статья итд.) Ответ выдавай в markdown формате".to_owned()
 }
 
 impl Default for EmbeddingConfiguration
 {
-    fn default() -> Self 
+    fn default() -> Self
     {
-        Self 
-        { 
-            reranker_model_path: reranker_model_path(),
-            reranker_config_path: reranker_config_path(),
-            reranker_tokenizer_path: reranker_tokenizer_path(),
-            retriver_model_path: retriver_model_path(),
-            retriver_config_path: retriver_config_path(),
-            retriver_tokenizer_path: retriver_tokenizer_path(),
-            generator_model_path: generator_model_path(),
-            generator_config_path: generator_config_path(),
-            generator_tokenizer_path: generator_tokenizer_path(),
-            system_prompt: system_prompt(),
-            embedding_batch_size: embedding_batch_size(),
-            dimension: dimension(),
-            min_reranking_score: min_reranking_score()
+        Self
+        {
+            rerankers:            default_rerankers(),
+            retrievers:           default_retrievers(),
+            generators:           default_generators(),
+            embedding_batch_size: default_embedding_batch_size(),
+            min_reranking_score:  default_min_reranking_score(),
+            system_prompt:        default_system_prompt(),
+            generator_temperature:default_generator_temperature(),
+            extended_generator_url: None
         }
     }
 }

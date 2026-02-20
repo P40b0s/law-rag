@@ -24,7 +24,4 @@ pub trait Embedder
     fn generate_embeddings(&self, text: &str) -> impl std::future::Future<Output = anyhow::Result<Vec<f32>>> + Send;
     // Обычно для BERT hidden_size = 1024, но может отличаться в зависимости от модели
     fn dimension(&self) -> usize;
-    /// Размер мини-батча для генерации эмбеддингов.
-    /// Несколько чанков обрабатываются за один forward pass через модель.
-    fn batch_size(&self) -> usize;
 }

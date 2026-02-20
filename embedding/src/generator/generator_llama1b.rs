@@ -1,7 +1,7 @@
-use std::sync::{Arc, atomic::AtomicUsize, Mutex};
+use std::{path::PathBuf, sync::{Arc, Mutex, atomic::AtomicUsize}};
 use anyhow::{Context, anyhow};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
-use rag_core::EmbeddingConfiguration;
+use rag_core::{EmbeddingConfiguration, GeneratorConfig, LocalModelConfig, ModelName};
 use tokenizers::Tokenizer;
 use tracing::{debug, info, warn};
 use candle_core::{Device, Tensor};
@@ -17,10 +17,11 @@ type Cache = candle_transformers::models::llama::Cache;
 /// Llama 1B model generator (using safetensors format)
 pub struct GeneratorLlama1b {
     settings: Arc<EmbeddingConfiguration>,
+    local_model_config: LocalModelConfig,
     model_settings: GeneratorSettings,
     system_prompt: String,
     model: Option<ModelWeights>,
-    config: Option<Config>,
+    internal_model_config: Config,
     cache: Mutex<Option<Cache>>,
     tokenizer: Option<tokenizers::Tokenizer>,
     device: Device,
@@ -29,25 +30,62 @@ pub struct GeneratorLlama1b {
 
 impl GeneratorLlama1b {
    
-    pub fn load(settings: Arc<EmbeddingConfiguration>) -> anyhow::Result<Self>
+    pub async fn load(settings: Arc<EmbeddingConfiguration>) -> anyhow::Result<Self>
     {
+        let model_name = ModelName::Llama1b;
+        let generator_config = settings
+            .find_generator(&model_name)?;
         let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
         info!("Running on device: {:?}", &device);
+        let generator_config = match generator_config 
+        {
+            GeneratorConfig::Llama1b(config) => Ok(config.to_owned()),
+            _ => Err(anyhow!("Неправильные настройки для {}", model_name))
+        }?;
+        let config = Self::load_config(&generator_config.config_path).await?;
+
         let slf = Self
         {
             system_prompt: settings.system_prompt.clone(),
-            settings,
-            model_settings: GeneratorSettings::default(),
+            local_model_config: generator_config,
+            model_settings: GeneratorSettings::with_temperature(settings.generator_temperature),
             model: None,
-            config: None,
+            internal_model_config: config,
             cache: Mutex::new(None),
             tokenizer: None,
             device,
+            settings,
             size: AtomicUsize::new(0)
-
         };
         let slf = slf.load_tokenizer()?;
         Ok(slf)
+    }
+
+    async fn load_config(path: &PathBuf) -> anyhow::Result<Config>
+    {
+        // Load and parse config manually since Config doesn't implement Deserialize
+        let config_content = tokio::fs::read_to_string(path).await
+            .context(format!("Error loading config from {}", path.display()))?;
+        let config_json: serde_json::Value = serde_json::from_str(&config_content)
+            .context("Error parsing config JSON")?;
+        let config = Config 
+        {
+            hidden_size: config_json["hidden_size"].as_u64().unwrap_or(2048) as usize,
+            intermediate_size: config_json["intermediate_size"].as_u64().unwrap_or(5632) as usize,
+            vocab_size: config_json["vocab_size"].as_u64().unwrap_or(128256) as usize,
+            num_hidden_layers: config_json["num_hidden_layers"].as_u64().unwrap_or(16) as usize,
+            num_attention_heads: config_json["num_attention_heads"].as_u64().unwrap_or(32) as usize,
+            num_key_value_heads: config_json["num_key_value_heads"].as_u64().unwrap_or(8) as usize,
+            use_flash_attn: false,
+            rms_norm_eps: config_json["rms_norm_eps"].as_f64().unwrap_or(1e-5),
+            rope_theta: config_json["rope_theta"].as_f64().unwrap_or(500000.0) as f32,
+            bos_token_id: config_json["bos_token_id"].as_u64().map(|v| v as u32),
+            eos_token_id: None,
+            rope_scaling: None,
+            max_position_embeddings: config_json["max_position_embeddings"].as_u64().unwrap_or(131072) as usize,
+            tie_word_embeddings: config_json.get("tie_word_embeddings").and_then(|v| v.as_bool()).unwrap_or(true),
+        };
+        Ok(config)
     }
     fn format_size(size_in_bytes: usize) -> String
     {
@@ -71,7 +109,7 @@ impl GeneratorLlama1b {
 
     fn load_tokenizer(mut self) -> anyhow::Result<Self>
     {
-        let path = &self.settings.generator_tokenizer_path;
+        let path = &self.local_model_config.tokenizer_path;
         if path.exists()
         {
             let tokenizer = Tokenizer::from_file(path).map_err(|e| anyhow!("Error {e}, when loading tokenizer on path: `{}`", path.display()))?;
@@ -80,7 +118,7 @@ impl GeneratorLlama1b {
         }
         else
         {
-            Err(anyhow::Error::msg(["Файл токенов не найден ->", &path.display().to_string()].concat()))
+            Err(anyhow!("Файл токенов не найден -> {}", path.display()))
         }
     }
 
@@ -113,14 +151,15 @@ impl GeneratorLlama1b {
 
     fn forward(&mut self, input: &candle_core::Tensor, offset: usize) -> anyhow::Result<candle_core::Tensor>
     {
-        if let (Some(model), Some(config)) = (self.model.as_ref(), self.config.as_ref())
+        if let Some(model) = self.model.as_ref()
         {
             let mut cache_guard = self.cache.lock()
                 .map_err(|e| anyhow!("Failed to lock cache: {}", e))?;
 
             // Initialize cache if needed
-            if cache_guard.is_none() {
-                *cache_guard = Some(Cache::new(true, candle_core::DType::F32, config, &self.device)?);
+            if cache_guard.is_none() 
+            {
+                *cache_guard = Some(Cache::new(true, candle_core::DType::F32, &self.internal_model_config, &self.device)?);
             }
 
             let cache = cache_guard.as_mut().unwrap();
@@ -137,10 +176,14 @@ impl GeneratorLlama1b {
         let temperature = settings.temperature;
         let top_k = settings.top_k;
         let top_p = settings.top_p;
-        let sampling = if temperature <= 0. {
+        let sampling = if temperature <= 0. 
+        {
             Sampling::ArgMax
-        } else {
-            match (top_k, top_p) {
+        } 
+        else 
+        {
+            match (top_k, top_p) 
+            {
                 (None, None) => Sampling::All { temperature },
                 (Some(k), None) => Sampling::TopK { k, temperature },
                 (None, Some(p)) => Sampling::TopP { p, temperature },
@@ -159,6 +202,10 @@ impl GeneratorLlama1b {
 impl super::generator_trait::Generator for GeneratorLlama1b
 {
     
+    fn model_name(&self) -> &ModelName 
+    {
+        &self.local_model_config.name
+    }
     async fn load_model(&mut self) -> anyhow::Result<()> 
     {
         if self.model.is_some() 
@@ -167,37 +214,15 @@ impl super::generator_trait::Generator for GeneratorLlama1b
         }
 
         let start = std::time::Instant::now();
-        let model_path = self.settings.generator_model_path.clone();
-        let config_path = self.settings.generator_config_path.clone();
+        let model_path = self.local_model_config.model_path.clone();
+        let config = self.internal_model_config.clone();
         let device = self.device.clone();
 
-        // Load and parse config manually since Config doesn't implement Deserialize
-        let config_content = tokio::fs::read_to_string(&config_path).await
-            .context(format!("Error loading config from {}", config_path.display()))?;
-        let config_json: serde_json::Value = serde_json::from_str(&config_content)
-            .context("Error parsing config JSON")?;
-
         // Load model weights from safetensors in blocking thread
-        let result: anyhow::Result<(ModelWeights, Config)> = tokio::task::spawn_blocking(move || {
-            // Create config from JSON
-            let config = Config {
-                hidden_size: config_json["hidden_size"].as_u64().unwrap_or(2048) as usize,
-                intermediate_size: config_json["intermediate_size"].as_u64().unwrap_or(5632) as usize,
-                vocab_size: config_json["vocab_size"].as_u64().unwrap_or(128256) as usize,
-                num_hidden_layers: config_json["num_hidden_layers"].as_u64().unwrap_or(16) as usize,
-                num_attention_heads: config_json["num_attention_heads"].as_u64().unwrap_or(32) as usize,
-                num_key_value_heads: config_json["num_key_value_heads"].as_u64().unwrap_or(8) as usize,
-                use_flash_attn: false,
-                rms_norm_eps: config_json["rms_norm_eps"].as_f64().unwrap_or(1e-5),
-                rope_theta: config_json["rope_theta"].as_f64().unwrap_or(500000.0) as f32,
-                bos_token_id: config_json["bos_token_id"].as_u64().map(|v| v as u32),
-                eos_token_id: None,
-                rope_scaling: None,
-                max_position_embeddings: config_json["max_position_embeddings"].as_u64().unwrap_or(131072) as usize,
-                tie_word_embeddings: config_json.get("tie_word_embeddings").and_then(|v| v.as_bool()).unwrap_or(true),
-            };
-
-            let vb = unsafe {
+        let model: anyhow::Result<ModelWeights> = tokio::task::spawn_blocking(move || 
+        {
+            let vb = unsafe 
+            {
                 VarBuilder::from_mmaped_safetensors(&[model_path.clone()], candle_core::DType::F32, &device)
                     .context(format!("Error loading model from {}", model_path.display()))?
             };
@@ -206,39 +231,39 @@ impl super::generator_trait::Generator for GeneratorLlama1b
                 .context("Error loading Llama model")?;
 
             info!("Llama 1B model loaded in {:?}", start.elapsed());
-            Ok((llama, config))
+            Ok(llama)
         }).await?;
 
-        let (model, config) = result?;
-        self.model = Some(model);
-        self.config = Some(config);
+        self.model = Some(model?);
 
         // Store approximate size
-        let metadata = std::fs::metadata(&self.settings.generator_model_path)?;
+        let metadata = std::fs::metadata(&self.local_model_config.model_path)?;
         self.size.store(metadata.len() as usize, std::sync::atomic::Ordering::Relaxed);
-
         // Reset cache when loading new model
         self.reset_cache();
 
         Ok(())
     }
 
-    fn unload_model(&mut self) {
+    fn unload_model(&mut self) 
+    {
         self.model = None;
-        self.config = None;
         self.reset_cache();
     }
 
-    fn model_is_loaded(&self) -> bool {
+    fn model_is_loaded(&self) -> bool 
+    {
         self.model.is_some()
     }
 
 
-    fn get_size_in_bytes(&self) -> usize {
+    fn get_size_in_bytes(&self) -> usize 
+    {
         self.size.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    fn get_system_prompt(&self) -> &str {
+    fn get_system_prompt(&self) -> &str 
+    {
         &self.system_prompt
     }
 
@@ -247,13 +272,6 @@ impl super::generator_trait::Generator for GeneratorLlama1b
     {
             // Reset cache for new generation
             self.reset_cache();
-
-            // match sender.send("ТЕСТ: Начинаю генерацию".to_string())
-            // {
-            //     Ok(_) => info!("[PROMPT] Тестовое сообщение отправлено"),
-            //     Err(e) => info!("[PROMPT] Ошибка отправки: {}", e),
-            // }
-            // info!("Сообщение должно быть отправлено!");
             let mut tos = self.get_token_stream();
             let prompt_str = self.get_message(query, context);
             let tokens = tos
@@ -373,7 +391,7 @@ mod tests
     {
         logger::init();
         let config = Arc::new(EmbeddingConfiguration::default());
-        let mut model = super::GeneratorLlama1b::load(config).unwrap();
+        let mut model = super::GeneratorLlama1b::load(config).await.unwrap();
         model.load_model().await.unwrap();
         let query = "Какого цвета лицо начальника когда он сердится или не трезв?";
         let context = vec!["Обычно лицо начальника серого цвета", "Когда он выпьет лицо красного цвета", "когда он нервничает у него лицо становиться синим", "Когда сердится то становиться похож на снегиря"];

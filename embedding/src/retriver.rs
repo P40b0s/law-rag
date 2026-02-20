@@ -1,10 +1,10 @@
 use std::{ops::Deref, path::{Path, PathBuf}, sync::{Arc, LazyLock, OnceLock}};
-use crate::{model::{Model, ModelName}};
+use crate::{model::{Model}};
 use anyhow::{Context, Result, anyhow};
 use candle_core::{Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::{bert::{BertModel, Config, DTYPE}};
-use rag_core::{Embedder, EmbeddingConfiguration, Encoder};
+use rag_core::{Embedder, EmbeddingConfiguration, Encoder, LocalModelConfig, ModelName};
 use serde::{Deserialize, Serialize};
 use tokenizers::{PaddingParams, Tokenizer};
 use tracing::{debug, error, info, warn};
@@ -24,20 +24,18 @@ use tracing::{debug, error, info, warn};
 /// - L2 нормализация для косинусного сходства
 pub struct RetriverModel
 {
-    /// Размерность выходного вектора эмбеддинга
-    pub dimension: usize,
     /// Максимальное количество токенов в одном чанке (обычно 8192)
     pub max_tokens: usize,
     /// Количество токенов перекрытия между чанками для сохранения контекста
     pub overlap_tokens: usize,
-    /// Имя используемой модели
-    pub model_name: ModelName,
     /// Устройство для вычислений (CPU или CUDA)
     device: Device,
     /// Конфигурация BERT модели
-    model_config: Config,
+    internal_model_config: Config,
     /// Настройки путей к файлам модели и finetuning
     embedding_config: Arc<EmbeddingConfiguration>,
+    /// Конфигурация конкретной модели (пути к файлам)
+    local_model_config: LocalModelConfig,
     /// Токенизатор для преобразования текста в токены
     tokenizer: Tokenizer,
     /// Загруженная BERT модель (None если не загружена)
@@ -124,15 +122,9 @@ impl Embedder for RetriverModel
         }
     }
 
-
     fn dimension(&self) -> usize 
     {
-        self.dimension
-    }
-
-    fn batch_size(&self) -> usize 
-    {
-        self.embedding_config.embedding_batch_size
+        self.internal_model_config.hidden_size
     }
 }
 
@@ -161,16 +153,17 @@ impl RetriverModel
     /// После создания нужно вызвать `load_model()` для загрузки весов BERT модели в память
     pub async fn new(emb_config: Arc<EmbeddingConfiguration>) -> Result<Self>
     {
-        info!("Try load {}", emb_config.retriver_tokenizer_path.display());
+        let model_name = ModelName::BgeM3;
+        let local_config = emb_config
+            .find_retriever(&model_name)?;
+        info!("Try load {}", local_config.tokenizer_path.display());
         let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
         info!("Running on device: {:?}", &device);
         let max_tokens = 8192;
-        
 
         // Загрузка и десериализация токенизатора
-        let tokenizer_file = &emb_config.retriver_tokenizer_path;
-        let tokenizer = tokio::fs::read(&tokenizer_file).await
-            .context(format!("Error load tokenizer file from {}", tokenizer_file.display()))?;
+        let tokenizer = tokio::fs::read(&local_config.tokenizer_path).await
+            .context(format!("Error load tokenizer file from {}", local_config.tokenizer_path.display()))?;
         let mut tokenizer = Tokenizer::from_bytes(tokenizer)
             .map_err(|e| anyhow::anyhow!("Error deserialize tokenizer file {}", e))?;
 
@@ -183,62 +176,22 @@ impl RetriverModel
         tokenizer.with_padding(Some(pp));
 
         // Загрузка конфигурации BERT модели
-        let model_config_file = &emb_config.retriver_config_path;
-        let model_config = tokio::fs::read(&model_config_file).await
-            .context(format!("Error load config file from {}", model_config_file.display()))?;
-        let config = serde_json::from_slice(&model_config).context("Error deserialize config file")?;
+        let model_config = tokio::fs::read(&local_config.config_path).await
+            .context(format!("Error load config file from {}", local_config.config_path.display()))?;
+        let internal_model_config = serde_json::from_slice(&model_config).context("Error deserialize config file")?;
 
         Ok(Self
         {
-            dimension: emb_config.dimension,
             max_tokens,
             overlap_tokens: (max_tokens / 10).min(256), // 10% от max_tokens, но не более 256
-            model_name: ModelName::M3,
-            model_config: config,
+            internal_model_config: internal_model_config,
+            local_model_config: local_config.to_owned(),
             embedding_config: emb_config,
             device,
             tokenizer,
             model: None // Модель будет загружена при вызове load_model()
         })
     }
-
-    // /// Генерирует вектор эмбеддингов для одного текста.
-    // ///
-    // /// # Аргументы
-    // /// * `text` - Текст для ембеддинга
-    // ///
-    // /// # Возвращает
-    // /// * `Ok(Vec<f32>)` - Вектор эмбеддингов (размерность = self.dimension)
-    // /// * `Err` - Если произошла ошибка или количество текстов != 1
-    // ///
-    // /// # Примечание
-    // /// Для батчевой обработки используйте `generate_embeddings_batch`.
-    // pub async fn generate_embeddings(&self, text: &str) -> Result<Vec<f32>>
-    // {
-    //     // Валидация входных данных
-    //     if text.is_empty() 
-    //     {
-    //         return Err(anyhow!("Cannot generate embeddings for empty text"));
-    //     }
-
-    //     let text_len = text.len();
-    //     info!("Generating embeddings for text of {} bytes", text_len);
-
-    //     // Предупреждение о слишком длинных текстах
-    //     if text_len > 1_000_000 
-    //     {  // 1MB
-    //         warn!("Very large text ({} bytes), this may take a long time", text_len);
-    //     }
-
-    //     let start = std::time::Instant::now();
-    //     let tensor = self.embed_tensor_batch(&[text]).await?;
-    //     info!("Tensor generation took {:?}", start.elapsed());
-    //     let embeddings = tensor.to_vec2()?
-    //         .into_iter()
-    //         .next()
-    //         .ok_or_else(|| anyhow!("Empty embedding vector"))?;
-    //     Ok(embeddings)
-    // }
 
     /// Генерирует тензор эмбеддингов для батча текстов.
     ///
@@ -411,7 +364,7 @@ impl Model for RetriverModel
 {
     fn name(&self) -> &ModelName 
     {
-        &self.model_name
+        &self.local_model_config.name
     }
 
     fn tokenizer(&self) -> &Tokenizer 
@@ -424,11 +377,6 @@ impl Model for RetriverModel
         &mut self.tokenizer
     }
 
-    fn embedding_config(&self) -> Arc<EmbeddingConfiguration> 
-    {
-        Arc::clone(&self.embedding_config)
-    }
-
     fn device(&self) -> &Device 
     {
         &self.device
@@ -439,7 +387,9 @@ impl Model for RetriverModel
     }
     fn dimension(&self) -> usize 
     {
-        self.dimension
+        //на случай если нужно урезать dimension дулаем это в конфигурационном файле
+        self.local_model_config.dimension
+            .unwrap_or(self.internal_model_config.hidden_size)
     }
 
     /// Загружает BERT модель в память.
@@ -466,14 +416,14 @@ impl Model for RetriverModel
             return Ok(())
         }
         let start = std::time::Instant::now();
-        let config = self.model_config.clone();
-        let model_name = self.model_name.as_ref().to_owned();
+        let config = self.internal_model_config.clone();
+        let model_name = self.local_model_config.name.as_ref().to_owned();
         let device = self.device().clone();
-        let emb_cfg = self.embedding_config();
 
         // Загрузка весов модели из файла (PyTorch формат)
-        let vb = VarBuilder::from_pth(&emb_cfg.retriver_model_path, DTYPE, &device)
-            .context(format!("Error load retriver model from file {}", emb_cfg.retriver_model_path.display()))?;
+        let model_path = self.local_model_config.model_path.clone();
+        let vb = VarBuilder::from_pth(&model_path, DTYPE, &device)
+            .context(format!("Error load retriver model from file {}", model_path.display()))?;
 
         // Загрузка модели в отдельном потоке, так как это блокирующая операция
         let result: Result<BertModel> = tokio::task::spawn_blocking(move ||
@@ -504,7 +454,7 @@ impl Model for RetriverModel
         }
         else
         {
-            Err(anyhow!("Model {} is not initialized!", self.model_name.as_ref()))
+            Err(anyhow!("Model {} is not initialized!", self.local_model_config.name.as_ref()))
         }
     }
 }

@@ -10,7 +10,7 @@ use tracing::info;
 pub use utilites::Date;
 pub use document::{Document, DocumentCard, Collection};
 pub use error::Error;
-pub use service::{Service, ModelsState};
+pub use service::{Service};
 
 #[cfg(test)]
 mod tests

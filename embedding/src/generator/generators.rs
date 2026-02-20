@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use rag_core::EmbeddingConfiguration;
+use anyhow::anyhow;
+use rag_core::{EmbeddingConfiguration, GeneratorConfig, ModelName};
 
-use crate::{ExtendedGenerator, Generator, GeneratorLlama1b, GeneratorLlama8b};
+use crate::{ExtendedGenerator, ExtendedGeneratorConfig, Generator, GeneratorLlama1b, GeneratorLlama8b};
 
 pub enum Generators
 {
@@ -13,15 +14,41 @@ pub enum Generators
 
 impl Generators
 {
-    pub fn load_llama1b(cfg: Arc<EmbeddingConfiguration>) -> anyhow::Result<Self>
+    pub async fn load(cfg: Arc<EmbeddingConfiguration>, model_name: ModelName) -> anyhow::Result<Self>
     {
-        let gener = GeneratorLlama1b::load(cfg)?;
-        Ok(Self::Llama1b(gener))
+        match model_name
+        {
+            ModelName::Llama1b => Ok(Self::Llama1b(GeneratorLlama1b::load(cfg).await?)),
+            ModelName::Llama8b => Ok(Self::Llama8b(GeneratorLlama8b::load(cfg).await?)),
+            ModelName::Qwen32b => 
+            {
+                if let Some(url) = cfg.extended_generator_url.as_ref()
+                {
+                    let config = ExtendedGeneratorConfig::new(model_name, url, cfg.generator_temperature);
+                    Ok(Self::Extended(ExtendedGenerator::new(config)))
+                }
+                else
+                {
+                    Err(anyhow!("Не указан адрес сервера генератора"))
+                }
+               
+            },
+            _ => Err(anyhow!("Указанная модель {} не предназначена для генерации контента", model_name))
+        }
     }
 }
 
 impl Generator for Generators
 {
+    fn model_name(&self) -> &ModelName 
+    {
+        match self
+        {
+            Generators::Llama1b(g) => g.model_name(),
+            Generators::Llama8b(g) => g.model_name(),
+            Generators::Extended(g) => g.model_name(),
+        }
+    }
     fn load_model(&mut self) -> impl std::future::Future<Output = anyhow::Result<()>> + Send 
     {
         async move 

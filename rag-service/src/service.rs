@@ -2,69 +2,62 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use database::{QdrantManager, SearchResult};
 use embedding::{Generator, Model};
-use rag_core::{Chunk, Embedder, EmbeddingConfiguration, Encoder, QdrantConfiguration, RerankResult, Reranker, ServiceStatus};
+use rag_core::{Chunk, Embedder, EmbeddingConfiguration, Encoder, GeneratorConfig, ModelsState, QdrantConfiguration, RerankResult, Reranker, ServiceStatus};
 use serde::Serialize;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{debug, error, info, warn};
 use crate::{Error, working_models::WorkingModels};
-
-#[derive(Debug, Serialize)]
-pub struct ModelsState
-{
-    retriver: bool,
-    generator: bool,
-    system_prompt: String,
-    model_size: usize
-}
 
 
 pub struct Service
 {
     models: WorkingModels,
     qdrant_manager: QdrantManager,
+    emb_conf: Arc<EmbeddingConfiguration>
 }
 
 impl Service
 {
     pub async fn new(emb_cfg: Arc<EmbeddingConfiguration>, qdrant_cfg: Arc<QdrantConfiguration>) -> Result<Self, Error>
     {
-         // let generator = GeneratorImpl::load(Arc::clone(&emb_cfg))
-        //     .inspect_err(|e| error!("Error when loading generator `{}`", e))
-        //     .map_err(|e| Error::ModelLoadError { model: "generator".to_owned(), source: e })?;
-        // let retriver = RetriverImpl::new(Arc::clone(&emb_cfg)).await
-        //     .inspect_err(|e| error!("Error when loading retriver model `{}`", e))
-        //     .map_err(|e| Error::ModelLoadError { model: "retriver".to_owned(), source: e })?;
-        // let reranker = RerankerImpl::new(Arc::clone(&emb_cfg)).await
-        //     .inspect_err(|e| error!("Error when loading reranker model `{}`", e))
-        //     .map_err(|e| Error::ModelLoadError { model: "reranker".to_owned(), source: e })?;
         let models = WorkingModels::new(emb_cfg.clone()).await?;
         let qdrant_manager = QdrantManager::new(Arc::clone(&qdrant_cfg), Arc::clone(&emb_cfg))?;
         let slf = Self
         {
             qdrant_manager,
-            models
+            models,
+            emb_conf: emb_cfg
         };
        Ok(slf)
     }
     pub async fn models_state(&self) -> ModelsState
     {
+        let mut models_state = ModelsState::new();
         let retriver_lock = self.models.get_retriver().await;
         let retriver = retriver_lock.model_is_loaded();
+        let retriver_model_name = retriver_lock.name().to_string();
         drop(retriver_lock);
         let reranker_lock = self.models.get_reranker().await;
         let reranker = reranker_lock.model_is_loaded();
+        let reranker_model_name = reranker_lock.name().to_string();
         drop(reranker_lock);
+        if retriver && reranker
+        {
+            models_state = models_state.with_retriver(retriver_model_name, reranker_model_name);
+        }
         let gen_lock = self.models.get_generator().await;
         let generator = gen_lock.model_is_loaded();
+        let generator_model_name = gen_lock.model_name().to_string();
+        let generator_size = gen_lock.get_size_in_bytes();
         let system_prompt = gen_lock.get_system_prompt().to_owned();
-        let model_size = gen_lock.get_size_in_bytes();
-        ModelsState
+        let temperature = self.emb_conf.generator_temperature;
+        let uri = self.emb_conf.extended_generator_url.clone();
+        drop(gen_lock);
+        if generator
         {
-            retriver: retriver && reranker,
-            generator,
-            system_prompt,
-            model_size
+            models_state = models_state.with_generator(generator_model_name, generator_size, system_prompt, temperature, uri);
         }
+        models_state
     }
 
     pub async fn get_encoder(&self) -> tokio::sync::RwLockReadGuard<'_, impl Encoder>
@@ -93,7 +86,12 @@ impl Service
     ///create collection if not exists
     pub async fn create_collection(&self, collection_name: &str) -> Result<(), Error>
     {
-        let _ = self.qdrant_manager.ensure_collection(collection_name).await
+        let dimension = 
+        {
+            let reranker = self.models.get_reranker().await;
+            reranker.dimension()
+        };
+        let _ = self.qdrant_manager.ensure_collection(collection_name, dimension).await
             .inspect_err(|e| error!("{}",e))?;
         Ok(())
     }
@@ -112,7 +110,7 @@ impl Service
             handle.block_on(async move
             {
                 let retriver = service.models.get_retriver().await;
-                let check_collection = service.qdrant_manager.ensure_collection(&collection_name).await;
+                let check_collection = service.qdrant_manager.ensure_collection(&collection_name, Model::dimension(&*retriver)).await;
                 if let Err(e) = check_collection
                 {
                     let _ = sender.send(ServiceStatus::qdrant_error(e));

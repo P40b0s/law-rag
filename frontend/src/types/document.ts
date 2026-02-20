@@ -1,12 +1,6 @@
 import z from "zod/v3";
 import { date_time_schema } from "./date_schema"
 
-// Схема для ChunkMeta
-const ChunkMetaSchema = z.object({
-  chunk_index: z.number().int().nonnegative(),
-  token_count: z.number().int().nonnegative(),
-})
-
 // Схема для Chunk
 const ChunkSchema = z.object({
   publication_url: z.string(),
@@ -18,8 +12,6 @@ const ChunkSchema = z.object({
   path: z.string(),
   content: z.string(),
   links_hashes: z.array(z.string()).optional(),
-  embeddings: z.array(z.number()).optional(),
-  meta: ChunkMetaSchema.optional(),
 })
 
 // Enum для статуса документа
@@ -41,7 +33,6 @@ const DocumentSchema = z.object({
 const DocumentArraySchema = z.array(DocumentSchema);
 
 // Экспорт типов
-export type ChunkMeta = z.infer<typeof ChunkMetaSchema>
 export type Chunk = z.infer<typeof ChunkSchema>
 export type DocumentStatus = z.infer<typeof DocumentStatusSchema>
 export type Document = z.infer<typeof DocumentSchema>
@@ -49,7 +40,6 @@ export type Document = z.infer<typeof DocumentSchema>
 
 // Экспорт схем
 export {
-  ChunkMetaSchema,
   ChunkSchema,
   DocumentStatusSchema,
   DocumentSchema,

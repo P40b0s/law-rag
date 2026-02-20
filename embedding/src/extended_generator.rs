@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use futures::StreamExt;
+use rag_core::ModelName;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{info, warn};
@@ -10,14 +11,11 @@ use crate::generator::Generator;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtendedGeneratorConfig
 {
-    /// Базовый URL сервера (например "http://localhost:8080")
-    #[serde(default = "default_base_url")]
     pub base_url: String,
     /// Имя модели (для OpenAI API, llama.cpp игнорирует это поле)
     #[serde(default = "default_model")]
-    pub model: String,
+    pub model: ModelName,
     /// Температура генерации (0.0 = greedy, 1.0 = creative)
-    #[serde(default = "default_temperature")]
     pub temperature: f64,
     /// Nucleus sampling (top-p)
     #[serde(default = "default_top_p")]
@@ -33,23 +31,21 @@ pub struct ExtendedGeneratorConfig
     pub repeat_penalty: f32,
 }
 
-fn default_base_url() -> String { "http://localhost:8080".to_owned() }
-fn default_model() -> String { "local-model".to_owned() }
-fn default_temperature() -> f64 { 0.6 }
+fn default_model() -> ModelName { ModelName::Qwen32b }
 fn default_top_p() -> f64 { 0.9 }
 fn default_top_k() -> usize { 30 }
 fn default_max_tokens() -> usize { 1000 }
 fn default_repeat_penalty() -> f32 { 1.1 }
 
-impl Default for ExtendedGeneratorConfig
+impl ExtendedGeneratorConfig
 {
-    fn default() -> Self
+    pub fn new(model: ModelName, base_url: &str, temperature: f64) -> Self
     {
         Self
         {
-            base_url: default_base_url(),
-            model: default_model(),
-            temperature: default_temperature(),
+            base_url: base_url.to_owned(),
+            model,
+            temperature,
             top_p: default_top_p(),
             top_k: default_top_k(),
             max_tokens: default_max_tokens(),
@@ -63,7 +59,7 @@ impl Default for ExtendedGeneratorConfig
 #[derive(Serialize)]
 struct ChatCompletionRequest
 {
-    model: String,
+    model: ModelName,
     messages: Vec<ChatMessage>,
     temperature: f64,
     top_p: f64,
@@ -324,6 +320,10 @@ impl ExtendedGenerator
 
 impl Generator for ExtendedGenerator
 {
+    fn model_name(&self) -> &ModelName 
+    {
+        &self.config.model
+    }
     /// Проверяет доступность сервера и кэширует результат в is_connected.
     fn load_model(&mut self) -> impl std::future::Future<Output = Result<()>> + Send
     {

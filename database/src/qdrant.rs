@@ -33,7 +33,6 @@ pub struct QdrantPayload
     /// Дата подписания в формате YYYYMMDD (u64) — для range-фильтров.
     pub document_sign_date: u64,
     pub path: String,
-    pub chunk_index: usize,
     /// Хэши связанных документов (ссылки из текста чанка).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links_hashes: Vec<String>,
@@ -146,7 +145,7 @@ impl QdrantManager
         )
     }
     /// Создание коллекции (если не существует)
-    pub async fn ensure_collection(&self, collection_name: &str) -> Result<()> 
+    pub async fn ensure_collection(&self, collection_name: &str, dimension: usize) -> Result<()> 
     {
         let collections_list = self.client.list_collections().await?;
         let distance: Distance = self.qdrant_config.distance.parse()?;
@@ -154,7 +153,7 @@ impl QdrantManager
             .any(|c| c.name == collection_name) 
         {
 
-            let vec_params =   qdrant_client::qdrant::VectorParamsBuilder::new(self.embedding_config.dimension as u64, distance.into()).build();
+            let vec_params =   qdrant_client::qdrant::VectorParamsBuilder::new(dimension as u64, distance.into()).build();
             let vectors_config = qdrant_client::qdrant::VectorsConfig
             {
                 config: Some(qdrant_client::qdrant::vectors_config::Config::Params(vec_params))
@@ -216,9 +215,16 @@ impl QdrantManager
         let doc_hash = chunks.first().map(|c| c.hash.clone()).unwrap_or(String::new());
         let dimension = embedder.dimension();
         let batch_size = self.embedding_config.embedding_batch_size;
-
+        let process = ServiceStatus::process_qdrant(
+            &doc_hash,
+            0,
+            chunks_count
+        );
+        let _ = sender.send(process);
         info!("Starting to add {} chunks to Qdrant for document {} (batch_size={})",
             chunks_count, doc_hash, batch_size);
+      
+        
         let start_time = std::time::Instant::now();
 
         // Обрабатываем мини-батчами
@@ -252,6 +258,7 @@ impl QdrantManager
                 batch_start + 1, batch_end, chunks_count,
                 chunks_per_sec, eta_secs
             );
+           
 
             // Собираем тексты для батчевого эмбеддинга
             let texts: Vec<&str> = batch.iter().map(|c| c.content.as_str()).collect();
@@ -296,10 +303,14 @@ impl QdrantManager
 
             if embeddings.len() != batch.len() 
             {
-                error!("Embeddings count mismatch: expected {}, got {}", batch.len(), embeddings.len());
+                let error = format!("Embeddings count mismatch: expected {}, got {}", batch.len(), embeddings.len());
+                error!("{}", &error);
+                let status = ServiceStatus::error(doc_hash.clone(), error);
+                let _ = sender.send(status);
                 return Err(Error::AnyhowError(anyhow::anyhow!(
                     "Embeddings count mismatch: expected {}, got {}", batch.len(), embeddings.len()
                 )));
+                 
             }
 
             // Создаем точки для Qdrant из всего батча
@@ -340,16 +351,26 @@ impl QdrantManager
                 self.client.upsert_points(builder.build())
             ).await;
 
-            match upsert_result {
-                Ok(Ok(_)) => {
+            match upsert_result 
+            {
+                Ok(Ok(_)) => 
+                {
                     info!("Upserted batch {} ({} points) to Qdrant", batch_idx + 1, points.len());
                 },
-                Ok(Err(e)) => {
-                    error!("Error upserting batch {}: {}", batch_idx + 1, e);
+                Ok(Err(e)) => 
+                {
+                    let error = format!("Error upserting batch {}: {}", batch_idx + 1, e);
+                    error!("{}", &error);
+                    let status = ServiceStatus::error(doc_hash.clone(), error);
+                    let _ = sender.send(status);
                     return Err(e.into());
                 },
-                Err(_) => {
-                    error!("Timeout upserting batch {} after {:?}", batch_idx + 1, upsert_timeout);
+                Err(_) => 
+                {
+                    let error = format!("Timeout upserting batch {} after {:?}", batch_idx + 1, upsert_timeout);
+                    error!("{}", &error);
+                    let status = ServiceStatus::error(doc_hash.clone(), error);
+                    let _ = sender.send(status);
                     return Err(Error::AnyhowError(anyhow::anyhow!(
                         "Timeout upserting batch {}", batch_idx + 1
                     )));
@@ -396,7 +417,6 @@ impl QdrantManager
                 document_number: chunk.number,
                 document_sign_date: sign_date_u64,
                 path: chunk.path,
-                chunk_index: chunk.meta.map(|m| m.chunk_index).unwrap_or(0),
                 links_hashes: chunk.links_hashes.unwrap_or_default(),
             },
         })
@@ -890,7 +910,6 @@ impl SearchResult
             document_title: String::new(),
             document_hash: String::new(),
             path: String::new(),
-            chunk_index: 0,
             document_number: String::new(),
             document_sign_date: 0,
             links_hashes: Vec::new(),

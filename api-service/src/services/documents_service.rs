@@ -1,8 +1,7 @@
 use std::{collections::HashMap, sync::{Arc, atomic::AtomicBool}};
-
 use database::{DocumentCardDbo, SearchResult};
-use rag_core::{ProcessStatus, RerankResult, ServiceStatus};
-use rag_service::{Document, DocumentCard, ModelsState};
+use rag_core::{ModelsState, ProcessStatus, RerankResult, ServiceStatus};
+use rag_service::{Document, DocumentCard};
 use systema_client::SystemaClient;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::{debug, error};

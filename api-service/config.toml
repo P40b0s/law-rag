@@ -1,20 +1,44 @@
-origins = [
-    "http://localhost:8080",
-    "http://localhost:8081",
-    "http://localhost:80",
-]
+origins = ["http://localhost:8080", "http://localhost:8081", "http://localhost:80", "http://192.168.0.162:8081"]
 server_port = 8081
 
-
 [embedding_configuration]
-retriver_model_path = "/home/phobos/projects/rust/law-rag/model/pytorch_model.bin"
-retriver_config_path = "/home/phobos/projects/rust/law-rag/model/config.json"
-retriver_tokenizer_path = "/home/phobos/projects/rust/law-rag/model/tokenizer.json"
+embedding_batch_size = 8
+min_reranking_score = 0.69
+system_prompt = "Ты - высококвалифицированный юрист, который специализируется на российском законодательстве. Ты помогаешь людям находить ответы на их вопросы, используя свои обширные знания законов и нормативных актов. Ты всегда предоставляешь точные и подробные ответы, ссылаясь на конкретные статьи и пункты законодательства. Ты также можешь объяснять сложные юридические концепции простым языком, чтобы помочь людям лучше понять их права и обязанности. Твоя цель - помочь людям разобраться в их юридических вопросах и предоставить им полезную информацию. В конце добавь ссылки на документы откуда ты взял информацию, а так же полный путь откуда взята информация (пнкт подпункт статья итд.) Ответ выдавай в markdown формате"
+generator_temperature = 0.05
 
-reranker_model_path = "/home/phobos/projects/rust/law-rag/model/reranker/model.safetensors"
-reranker_config_path = "/home/phobos/projects/rust/law-rag/model/reranker/config.json"
-reranker_tokenizer_path = "/home/phobos/projects/rust/law-rag/model/reranker/tokenizer.json"
+[[embedding_configuration.rerankers]]
+name = "BgeRerankerV2M3"
+model_file = "model.safetensors"
+model_path = "/home/phobos/projects/rust/law-rag/model/reranker/model.safetensors"
+config_path = "/home/phobos/projects/rust/law-rag/model/reranker/config.json"
+tokenizer_path = "/home/phobos/projects/rust/law-rag/model/reranker/tokenizer.json"
+dimension = 1
 
-generator_model_path = "/home/phobos/projects/rust/law-rag/model/generator/llama3/model-q4_K.gguf"
-generator_config_path = "/home/phobos/projects/rust/law-rag/model/generator/llama3/config.json"
-generator_tokenizer_path = "/home/phobos/projects/rust/law-rag/model/generator/llama3/tokenizer.json"
+[[embedding_configuration.retrievers]]
+name = "BgeM3"
+model_file = "pytorch_model.bin"
+model_path = "/home/phobos/projects/rust/law-rag/model/pytorch_model.bin"
+config_path = "/home/phobos/projects/rust/law-rag/model/config.json"
+tokenizer_path = "/home/phobos/projects/rust/law-rag/model/tokenizer.json"
+
+[[embedding_configuration.generators]]
+type = "llama1b"
+name = "Llama1b"
+model_file = "model.safetensors"
+model_path = "/home/phobos/projects/rust/law-rag/model/generator/llama3/1b/model.safetensors"
+config_path = "/home/phobos/projects/rust/law-rag/model/generator/llama3/1b/config.json"
+tokenizer_path = "/home/phobos/projects/rust/law-rag/model/generator/llama3/1b/tokenizer.json"
+
+[[embedding_configuration.generators]]
+type = "llama8b"
+name = "Llama8b"
+model_file = "model-q4_K.gguf"
+model_path = "/home/phobos/projects/rust/law-rag/model/generator/llama3/model-q4_K.gguf"
+config_path = "/home/phobos/projects/rust/law-rag/model/generator/llama3/config.json"
+tokenizer_path = "/home/phobos/projects/rust/law-rag/model/generator/llama3/tokenizer.json"
+
+[qdrant_configuration]
+min_search_score = 0.5
+qdrant_url = "http://localhost:6334"
+distance = "cosine"

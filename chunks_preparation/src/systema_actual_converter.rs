@@ -90,7 +90,7 @@ mod tests
 {
     use std::sync::Arc;
 
-    use rag_core::{Chunk, ChunkMeta, EmbeddingConfiguration};
+    use rag_core::{Chunk, EmbeddingConfiguration};
     use systema_client::{DocumentNode, DocumentNodes};
     use tracing::{debug, info};
     use utilites::Date;

@@ -23,7 +23,7 @@ mod tests
     {
         logger::init();
         let emb_cfg = Arc::new(EmbeddingConfiguration::default());
-        let mut generator = GeneratorLlama1b::load(emb_cfg).unwrap();
+        let mut generator = GeneratorLlama1b::load(emb_cfg).await.unwrap();
         generator.load_model().await.unwrap();
     }
 }

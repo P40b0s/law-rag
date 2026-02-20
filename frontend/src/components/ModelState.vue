@@ -31,7 +31,7 @@
       .popover-control
         .control-label Состояние:
         n-switch(
-          :value="state.retriver"
+          :value="!!state.retriver"
           @update:value="toggleModel('retriver')"
           :loading="loadingStates.retriver"
           :disabled="loadingStates.generator"
@@ -39,10 +39,13 @@
           template(#checked) Загружен
           template(#unchecked) Выгружен
 
-      .popover-info(v-if="state.model_size && state.retriver")
+      .popover-info(v-if="state.retriver")
         .info-item
           n-icon(:component="ServerOutline" size="16")
-          span {{ formatBytes(state.model_size) }}
+          span {{ state.retriver.retriver_model_name }}
+        .info-item
+          n-icon(:component="ServerOutline" size="16")
+          span {{ state.retriver.reranker_model_name }}
 
   // Генератор модель
   n-popover(
@@ -75,7 +78,7 @@
       .popover-control
         .control-label Состояние:
         n-switch(
-          :value="state.generator"
+          :value="!!state.generator"
           @update:value="toggleModel('generator')"
           :loading="loadingStates.generator"
           :disabled="loadingStates.retriver"
@@ -83,11 +86,19 @@
           template(#checked) Загружен
           template(#unchecked) Выгружен
 
-      .popover-section(v-if="state.system_prompt")
+      .popover-info(v-if="state.generator")
+        .info-item
+          n-icon(:component="ServerOutline" size="16")
+          span {{ state.generator.model_name }} ({{ formatBytes(state.generator.model_size) }})
+        .info-item
+          n-icon(:component="ServerOutline" size="16")
+          span Температура: {{ state.generator.temperature }}
+
+      .popover-section(v-if="state.generator?.system_prompt")
         .section-title
           n-icon(:component="DocumentTextOutline" size="16")
           span Системный промпт
-        .system-prompt {{ state.system_prompt }}
+        .system-prompt {{ state.generator.system_prompt }}
 
   // Кнопка управления всеми моделями
   n-popover(
@@ -165,7 +176,7 @@ const loadingStates = reactive({
 // Вычисляемые свойства
 const loadedCount = computed(() => {
   if (state.value) {
-    return (state.value.generator ? 1 : 0) + (state.value.retriver ? 1 : 0)
+    return (state.value.generator != null ? 1 : 0) + (state.value.retriver != null ? 1 : 0)
   } else {
     return 0
   }
@@ -193,7 +204,7 @@ const getOverallStatusType = (): 'success' | 'warning' | 'default' => {
 const toggleModel = async (modelKey: ModelKey) => {
   if (!state.value) return
   
-  const currentState = state.value[modelKey]
+  const currentState = state.value[modelKey] != null
   loadingStates[modelKey] = true
   
   try 
@@ -274,7 +285,7 @@ const getModelName = (modelKey: ModelKey): string => {
 const getStatusClass = (modelKey: ModelKey): string => {
   if (!state.value) return 'status-unloaded'
   
-  return state.value[modelKey] ? 'status-loaded' : 'status-unloaded'
+  return state.value[modelKey] != null ? 'status-loaded' : 'status-unloaded'
 }
 
 // Форматирование байтов в читаемый вид

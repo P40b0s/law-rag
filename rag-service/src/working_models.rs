@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use embedding::{BgeReranker, Generator, GeneratorLlama1b, Generators, Model, RetriverModel};
-use rag_core::{Embedder, EmbeddingConfiguration, Encoder, Reranker};
+use embedding::{BgeReranker, Generator, Generators, Model, RetriverModel};
+use rag_core::{Embedder, EmbeddingConfiguration, Encoder, GeneratorConfig, LocalModelConfig, ModelName, Reranker};
 use tokio::sync::RwLock;
 use tracing::error;
 
@@ -19,22 +19,13 @@ pub struct WorkingModels
 }
 impl WorkingModels
 {
-    //TODO сделать загрузку генератора в зависимости от текущих настроек!
-    pub async fn new(emb_cfg: Arc<EmbeddingConfiguration>) -> Result<Self, Error>
+    pub async fn new(
+        emb_cfg: Arc<EmbeddingConfiguration>,
+    ) -> Result<Self, Error>
     {
-        let generator = if emb_cfg.dimension > 100
-        {
-            GeneratorImpl::load_llama1b(emb_cfg.clone())
-        }
-        else
-        {
-            GeneratorImpl::load_llama1b(emb_cfg.clone())
-        };
-        let generator =  generator.inspect_err(|e| error!("Error when loading generator `{}`", e))
+        let generator = GeneratorImpl::load(Arc::clone(&emb_cfg), ModelName::Llama1b).await
+            .inspect_err(|e| error!("Error when loading generator `{}`", e))
             .map_err(|e| Error::ModelLoadError { model: "generator".to_owned(), source: e })?;
-        // let generator = GeneratorImpl::load(Arc::clone(&emb_cfg))
-        //     .inspect_err(|e| error!("Error when loading generator `{}`", e))
-        //     .map_err(|e| Error::ModelLoadError { model: "generator".to_owned(), source: e })?;
         let retriver = RetriverImpl::new(Arc::clone(&emb_cfg)).await
             .inspect_err(|e| error!("Error when loading retriver model `{}`", e))
             .map_err(|e| Error::ModelLoadError { model: "retriver".to_owned(), source: e })?;

@@ -1,4 +1,4 @@
-use rag_core::{Chunk, ChunkMeta, Encoder, ServiceStatus};
+use rag_core::{Chunk, Encoder, ServiceStatus};
 use systema_client::{DocumentTree, TreeNode};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -77,12 +77,6 @@ impl Chunker for SystemaActualChunker
                     path: path.clone(),
                     links_hashes: node.links.clone(),
                     content: chunk_content,
-                    embeddings: None,
-                    meta: Some(ChunkMeta
-                    {
-                        chunk_index: idx,
-                        token_count,
-                    }),
                 });
 
                 let _ = sender.send(ServiceStatus::process_chunk(hash, chunk_num, self.0.node_count()));

@@ -72,7 +72,14 @@ mod tests
     {
         logger::init();
        let cfg = super::Configuration::new().expect("No cfg!");
-       info!("{}", cfg.embedding_configuration.generator_config_path.display());
+
+    }
+    #[test]
+    fn save_cfg()
+    {
+        logger::init();
+       let cfg = super::Configuration::new().expect("No cfg!");
+       utilites::serialize(cfg, "configuration.toml", false, utilites::Serializer::Toml);
 
     }
 }

@@ -15,19 +15,7 @@ pub struct Chunk
     pub content: String,
     #[serde(skip_serializing_if="Option::is_none")]
     pub links_hashes: Option<Vec<String>>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub embeddings: Option<Vec<f32>>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub meta: Option<ChunkMeta>
 }
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
-pub struct ChunkMeta
-{
-    //http://actual.pravo.gov.ru/list.html#hash=3582241193d46b766ef7d5ae7f8d50577be6bf8a5b6e0d77784769fe1e9628b4
-    pub chunk_index: usize,
-    pub token_count: usize
-}
-
 
 pub struct ChunkedText
 {

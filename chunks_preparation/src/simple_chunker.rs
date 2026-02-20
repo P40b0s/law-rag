@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use rag_core::{Chunk, ChunkMeta, Encoder, ServiceStatus};
+use rag_core::{Chunk, Encoder, ServiceStatus};
 use systema_client::{DocumentNode, DocumentNodes};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::warn;

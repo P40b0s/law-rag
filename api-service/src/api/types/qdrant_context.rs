@@ -16,7 +16,6 @@ pub struct QdrantContext
     pub document_number: String,    // Номер документа
     pub document_sign_date: String, // Дата подписания документа
     pub path: String, // Полный путь
-    pub chunk_index: usize, 
 }
 
 impl From<RerankResult<SearchResult>> for QdrantContext
@@ -31,7 +30,6 @@ impl From<RerankResult<SearchResult>> for QdrantContext
             reranker_score: result.score,
             text: db_object.payload.text.clone(),
             path: db_object.payload.path.clone(),
-            chunk_index: db_object.payload.chunk_index,
             document_uri: db_object.payload.document_uri.clone(),
             document_hash: db_object.payload.document_hash.clone(),
             document_title: db_object.payload.document_title.clone(),

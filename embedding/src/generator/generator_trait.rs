@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use candle_transformers::generation::LogitsProcessor;
-use rag_core::EmbeddingConfiguration;
+use rag_core::{EmbeddingConfiguration, ModelName};
 use crate::{token_output_stream::TokenOutputStream};
 
 /// Common settings for all generator models
@@ -59,11 +59,23 @@ impl Default for GeneratorSettings
         }
     }
 }
+impl GeneratorSettings
+{
+    pub fn with_temperature(tmp: f64) -> Self
+    {
+        Self
+        {
+            temperature: tmp,
+            ..Default::default()
+        }
+    }
+}
 
 /// Trait for text generation models
 pub trait Generator: Send + Sync
 where Self: Sized
 {
+    fn model_name(&self) -> &ModelName;
     /// Load the model into memory
     fn load_model(&mut self) -> impl std::future::Future<Output = Result<()>> + Send;
 

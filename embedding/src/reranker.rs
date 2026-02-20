@@ -1,10 +1,10 @@
 use std::sync::{Arc, OnceLock};
 
-use crate::{model::{Model, ModelName}};
+use crate::{model::{Model}};
 use anyhow::{Context, Result, anyhow};
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
-use rag_core::{EmbeddingConfiguration, RerankResult, Reranker};
+use rag_core::{EmbeddingConfiguration, LocalModelConfig, ModelName, RerankResult, Reranker};
 use tokenizers::{PaddingParams, Tokenizer};
 use tracing::info;
 use candle_transformers::models::xlm_roberta::{XLMRobertaForSequenceClassification, Config};
@@ -28,10 +28,10 @@ const DTYPE: DType = DType::F32;
 /// 2. Реранкинг с помощью BgeReranker (уточнение порядка и отбор топ-K)
 pub struct BgeReranker
 {
-    model_name: ModelName,
     device: Device,
-    model_config: Config,
+    internal_model_config: Config,
     embedding_config: Arc<EmbeddingConfiguration>,
+    local_model_config: LocalModelConfig,
     tokenizer: Tokenizer,
     model: Option<XLMRobertaForSequenceClassification>
 }
@@ -40,7 +40,7 @@ impl Model for BgeReranker
 {
     fn name(&self) -> &ModelName 
     {
-        &self.model_name
+        &self.local_model_config.name
     }
 
     fn tokenizer(&self) -> &Tokenizer 
@@ -53,11 +53,6 @@ impl Model for BgeReranker
         &mut self.tokenizer
     }
 
-    fn embedding_config(&self) -> Arc<EmbeddingConfiguration> 
-    {
-        Arc::clone(&self.embedding_config)
-    }
-
     fn device(&self) -> &Device 
     {
         &self.device
@@ -68,7 +63,9 @@ impl Model for BgeReranker
     }
     fn dimension(&self) -> usize 
     {
-        1 // Реранкеры обычно возвращают один скор релевантности на пару (query, document)
+        self.local_model_config.dimension
+        .or(Some(self.internal_model_config.hidden_size))
+        .unwrap_or(1)
     }
 
     async fn load_model(&mut self) -> Result<()>
@@ -76,14 +73,14 @@ impl Model for BgeReranker
         if self.model.is_none()
         {
             let start = std::time::Instant::now();
-            let config = self.model_config.clone();
-            let model_name = self.model_name.as_ref().to_owned();
+            let config = self.internal_model_config.clone();
+            let model_name = self.local_model_config.name.as_ref().to_owned();
             let device = self.device().clone();
-            let emb_cfg = self.embedding_config();
 
             // Чтение файла safetensors
-            let model_data = tokio::fs::read(&emb_cfg.reranker_model_path).await
-                .context(format!("Error reading reranker model file {}", emb_cfg.reranker_model_path.display()))?;
+            let model_path = self.local_model_config.model_path.clone();
+            let model_data = tokio::fs::read(&model_path).await
+                .context(format!("Error reading reranker model file {}", model_path.display()))?;
 
             let result: Result<XLMRobertaForSequenceClassification> = tokio::task::spawn_blocking(move ||
             {
@@ -122,7 +119,7 @@ impl Model for BgeReranker
         }
         else
         {
-            Err(anyhow!("Model {} is not initialized!", self.model_name.as_ref()))
+            Err(anyhow!("Model {} is not initialized!", self.local_model_config.name.as_ref()))
         }
     }
 }
@@ -131,15 +128,17 @@ impl BgeReranker
 {
     pub async fn new(emb_config: Arc<EmbeddingConfiguration>) -> Result<Self>
     {
-        info!("Try load {}", emb_config.reranker_tokenizer_path.display());
+        let model_name = ModelName::BgeRerankerV2M3;
+        let local_config = emb_config
+            .find_reranker(&model_name)?;
+        info!("Try load {}", local_config.tokenizer_path.display());
         let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
         info!("Running on device: {:?}", &device);
-        let tokenizer_file = &emb_config.reranker_tokenizer_path;
-        let tokenizer = tokio::fs::read(&tokenizer_file).await
-            .with_context(||format!("Error load tokenizer file from {}", tokenizer_file.display()))?;
+        let tokenizer = tokio::fs::read(&local_config.tokenizer_path).await
+            .with_context(|| format!("Error load tokenizer file from {}", local_config.tokenizer_path.display()))?;
         let mut tokenizer = Tokenizer::from_bytes(tokenizer)
             .map_err(|e| anyhow::anyhow!("Error deserialize tokenizer file {}", e))?;
-        let pp = PaddingParams 
+        let pp = PaddingParams
         {
             strategy: tokenizers::PaddingStrategy::BatchLongest,
             direction: tokenizers::PaddingDirection::Right,
@@ -149,21 +148,19 @@ impl BgeReranker
             ..Default::default()
         };
         tokenizer.with_padding(Some(pp));
-        
-        let model_config_file = &emb_config.reranker_config_path;
-        let model_config = tokio::fs::read(&model_config_file).await
-            .context(format!("Error load config file from {}", model_config_file.display()))?;
-        let model_config = serde_json::from_slice(&model_config).context("Error deserialize config file")?;
+
+        let model_config = tokio::fs::read(&local_config.config_path).await
+            .context(format!("Error load config file from {}", local_config.config_path.display()))?;
+        let internal_model_config = serde_json::from_slice(&model_config).context("Error deserialize config file")?;
         let slf = Self
         {
-            model_name: ModelName::RerankerM3,
-            model_config,
+            internal_model_config,
+            local_model_config: local_config.to_owned(),
             embedding_config: emb_config,
             device,
             tokenizer,
             model: None
         };
-        //let with_loaded_model = slf.load_model().await?;
         Ok(slf)
     }
 
