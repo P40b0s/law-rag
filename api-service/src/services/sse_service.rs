@@ -51,7 +51,7 @@ impl Broadcaster
 {
     pub fn new() -> Arc<Self> 
     {
-        let (tx, _) = broadcast::channel(16);
+        let (tx, _) = broadcast::channel(256);
         Arc::new(Broadcaster { fanout: tx })
     }
     pub fn add_client(&self) -> broadcast::Receiver<Event> 
@@ -101,13 +101,21 @@ pub async fn sse_handler(State(app_state): State<Arc<AppState>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> 
 {
     let mut rx = app_state.services.sse_service.add_client();
-    let stream = async_stream::stream! 
+    let stream = async_stream::stream!
     {
         yield Ok(Event::default().data("Вы подключены к шине сообщений"));
-        loop 
+        loop
         {
-            let msg = rx.recv().await.unwrap();
-            yield Ok(msg);
+            match rx.recv().await
+            {
+                Ok(msg) => yield Ok(msg),
+                Err(broadcast::error::RecvError::Lagged(n)) =>
+                {
+                    warn!("SSE клиент отстал, пропущено {} сообщений", n);
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
         }
     };
     Sse::new(stream).keep_alive(KeepAlive::default())

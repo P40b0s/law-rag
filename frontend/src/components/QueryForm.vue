@@ -23,22 +23,22 @@ n-card.queries(title="Поиск по базе знаний" :bordered="false")
       n-collapse(arrow-placement="right")
         n-collapse-item(title="Расширенные настройки" name="advanced")
           n-space(vertical :size="12")
-            n-form-item(label="Лимит результатов" path="limit")
+            n-form-item(label="Лимит на каждую коллекцию" path="per_collection_limit")
               n-slider(
-                v-model:value="formData.limit"
+                v-model:value="formData.per_collection_limit"
                 :min="5"
                 :max="50"
                 :step="5"
                 :marks="{ 5: '5', 25: '25', 50: '50' }"
               )
 
-            n-form-item(label="Лимит reranker" path="reranker_limit")
+            n-form-item(label="Общий лимит результатов" path="final_limit")
               n-slider(
-                v-model:value="formData.reranker_limit"
-                :min="3"
-                :max="20"
+                v-model:value="formData.final_limit"
+                :min="5"
+                :max="30"
                 :step="1"
-                :marks="{ 3: '3', 10: '10', 20: '20' }"
+                :marks="{ 5: '5', 10: '10', 20: '20', 30: '30' }"
               )
 
       n-form-item
@@ -188,8 +188,8 @@ const message = notify_service;
 
 const formData = ref({
   query: '',
-  limit: 10,
-  reranker_limit: 5
+  per_collection_limit: 20,
+  final_limit: 10
 })
 
 // Form rules
@@ -230,8 +230,8 @@ const handleSearch = async () => {
 
     const results = await http_service.query_service.search_results(
       formData.value.query,
-      formData.value.limit,
-      formData.value.reranker_limit
+      formData.value.per_collection_limit,
+      formData.value.final_limit
     )
 
     if (results) {

@@ -12,7 +12,6 @@ const QdrantContextSchema = z.object({
   document_number: z.string(),
   document_sign_date: z.string(),
   path: z.string(),
-  chunk_index: z.number().int().nonnegative()
 });
 
 // Схема для массива результатов
