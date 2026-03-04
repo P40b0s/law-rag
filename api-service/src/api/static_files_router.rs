@@ -57,7 +57,6 @@ fn serve_static_file(path: &str) -> Result<Response<Body>, StatusCode> {
     };
 
     // Агрессивное кэширование для статических ресурсов (год)
-    // Vite автоматически добавляет хеши к именам файлов при сборке
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)

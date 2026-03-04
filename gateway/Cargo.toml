@@ -1,0 +1,27 @@
+[package]
+name = "gateway"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+sqlx= {version = "0.8.6", features = ["sqlite", "runtime-tokio"] }
+uuid= {version="1.21.0", features = ["v7"] }
+axum= {version = "0.8.8", features = ["tokio", "json", "query", "multipart"]}
+tower = {version = "0.5.3", features = ["full"]}
+tower-http= {version = "0.6.8", features = ["cors", "fs", "trace", "limit", "compression-gzip"]}
+futures = "0.3.32"
+futures-util = { version = "0.3.32", default-features = false, features = ["sink", "std"] }
+async-stream="0.3.6"
+gatehouse = "0.2.0"
+cookie = "0.18.1"
+thiserror.workspace = true
+tracing-subscriber.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+figment.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+utilites.workspace = true
+tokio.workspace = true
+jwt_authentification = {git = "https://github.com/P40b0s/jwt_authentification.git", features= ["async"]}
+reqwest = { version = "0.12", features = ["stream", "json"] }

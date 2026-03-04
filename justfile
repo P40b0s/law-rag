@@ -23,9 +23,9 @@ dev:
 # Сборка
 build:
     cd frontend && /home/phobos/.local/share/pnpm/pnpm run build
-    cargo build --release -p employee-accounting-server
+    cargo build --release
     
     # Сборка
 build-win:
     cd frontend && /home/phobos/.local/share/pnpm/pnpm run build
-    cargo build --target x86_64-pc-windows-gnu --release -p employee-accounting-server --verbose
+    cargo build --target x86_64-pc-windows-gnu --release --verbose

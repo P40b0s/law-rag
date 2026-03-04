@@ -6,7 +6,7 @@ edition = "2024"
 [workspace]
 members = ["embedding",
     "rag-service","systema-client"
-, "database", "api-service", "chunks_preparation", "rag-core"]
+, "database", "api-service", "chunks_preparation", "rag-core", "gateway"]
 default-members = ["api-service"]
 [workspace.dependencies]
 candle-core = {git = "https://github.com/huggingface/candle.git", package="candle-core"}

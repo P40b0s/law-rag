@@ -50,11 +50,13 @@ export default defineConfig({
     },
     server: {
         port: 8080,
+        host: '0.0.0.0',
         strictPort: true,
-        // Прокси для перенаправления API запросов на бэкенд в режиме разработки
+        // Прокси для перенаправления API запросов на бэкенд в режиме разработки.
+        // Адрес бэкенда берётся из .env.development: PUBLIC_API_ADDRESSE + PUBLIC_API_PORT
         proxy: {
             '/api_v1': {
-                target: 'http://localhost:8081',
+                target: `${process.env.PUBLIC_API_ADDRESSE ?? 'http://localhost'}:${process.env.PUBLIC_API_PORT ?? '8081'}`,
                 changeOrigin: true,
             },
         },
