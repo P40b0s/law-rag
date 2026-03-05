@@ -7,13 +7,14 @@ use tower::{Service, Layer};
 use axum::http::{HeaderMap, Request, Response, StatusCode, Uri};
 use futures::future::BoxFuture;
 use futures::FutureExt;
+use cookie::Cookie;
 use tracing::{debug, error};
 use utilites::http::AUTHORIZATION;
-use crate::configuration::Configuration;
 use crate::error::ServerErrorResponse;
+use crate::services::ServicesRepository;
 use crate::state::AppState;
 use crate::user::User;
-use super::user_extension::UserExtension;
+use crate::api::extensions::UserExtension;
 
 // /// Слой обработки маршрута с авторизацией
 // #[derive(Clone)]
@@ -62,12 +63,12 @@ use super::user_extension::UserExtension;
 
 /// Tower Layer — оборачивает роутер в `AuthMiddleware`
 #[derive(Clone)]
-pub struct AuthLayer
+pub struct TokenAuthLayer
 {
     state: Arc<AppState>,
 }
 
-impl AuthLayer
+impl TokenAuthLayer
 {
     pub fn new(state: Arc<AppState>) -> Self
     {
@@ -75,27 +76,27 @@ impl AuthLayer
     }
 }
 
-impl<S> tower::Layer<S> for AuthLayer
+impl<S> tower::Layer<S> for TokenAuthLayer
 where
     S: Service<Request<axum::body::Body>, Response = Response<axum::body::Body>> + Clone + Send + 'static,
     S::Future: Send + 'static,
 {
-    type Service = AuthMiddleware<S>;
+    type Service = TokenAuthMiddleware<S>;
     fn layer(&self, inner: S) -> Self::Service
     {
-        AuthMiddleware::new(inner, self.state.clone())
+        TokenAuthMiddleware::new(inner, self.state.clone())
     }
 }
 
 /// Проверяет авторизацию и прокидывает `UserExtension` в extensions запроса
 #[derive(Clone)]
-pub struct AuthMiddleware<S>
+pub struct TokenAuthMiddleware<S>
 {
     inner: S,
     state: Arc<AppState>,
 }
 
-impl<S> AuthMiddleware<S> 
+impl<S> TokenAuthMiddleware<S> 
 {
     pub fn new(inner: S, state: Arc<AppState>) -> Self 
     {
@@ -108,7 +109,7 @@ impl<S> AuthMiddleware<S>
 }
 
 /// Реализация трейта `Service` для middleware
-impl<S> Service<Request<axum::body::Body>> for AuthMiddleware<S>
+impl<S> Service<Request<axum::body::Body>> for TokenAuthMiddleware<S>
 where
     S: Service<Request<axum::body::Body>, Response = Response<axum::body::Body>> + Clone + Send + 'static,
     S::Future: Send + 'static,
@@ -122,17 +123,29 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, mut req: Request<axum::body::Body>) -> Self::Future 
+    fn call(&mut self, mut req: Request<axum::body::Body>) -> Self::Future
     {
         let state = self.state.clone();
         let mut inner = self.inner.clone();
-        async move 
+        async move
         {
-            let headers = req.headers();  
+            let headers = req.headers();
+
+            // Гостевой путь: X-Key (fetch/XHR) или cookie guest_token (browser navigation)
+            if let Some(guest_jwt) = extract_guest_token(headers)
+            {
+                return match guest_checker(&guest_jwt, req.uri(), Arc::clone(&state)).await
+                {
+                    Ok(()) => inner.call(req).await,
+                    Err(resp) => Ok(resp),
+                };
+            }
+
+            // Пользовательский путь: Authorization: Bearer <jwt>
             let bearer_check = bearer_checker(headers, Arc::clone(&state)).await;
             if let Ok(user) = bearer_check
             {
-                if let Err(e) = permissions_checker(req.uri(), &user, &*state.configuration)
+                if let Err(e) = permissions_checker(req.uri(), &user, &state.services_repository).await
                 {
                     return Ok(access_denied_response(e));
                 }
@@ -156,43 +169,52 @@ where
     }
 }
 
-fn permissions_checker(uri: &Uri, user: &User, configuration: &Configuration) -> Result<(), String>
+async fn permissions_checker(uri: &Uri, user: &User, repo: &ServicesRepository) -> Result<(), String>
 {
     let path = uri.path();
-    // split('/') для "/info/search" даёт ["", "info", "search"] — нужен первый непустой сегмент
-    if let Some(prefix) = path.split('/').find(|s| !s.is_empty())
+    let prefix = match path.split('/').find(|s| !s.is_empty())
     {
-        if let Some(service) = configuration.get_service_by_prefix(prefix)
+        Some(p) => p,
+        None =>
         {
-            if let Some(user_permissions) = user.access.iter().find(|f| f.service_name == service.service_name)
-            {
-                for required_permission in &service.permissions
-                {
-                    if user_permissions.permissions.contains(required_permission)
-                    {
-                        return Ok(());
-                    }
-                }
-                error!("Пользователь `{}` не имеет нужных прав для доступа к сервису `{}`", user.username, service.service_name);
-                Err("Недостаточно прав для доступа к сервису".to_owned())
-            }
-            else
-            {
-                error!("Пользователь `{}` не имеет прав доступа к сервису `{}`", user.username, service.service_name);
-                Err("Пользователь не имеет доступа к этому сервису".to_owned())
-            }
+            error!("Не указан префикс сервиса в URL `{}`", path);
+            return Err("Не указан префикс сервиса".to_owned());
         }
-        else
+    };
+
+    let service = repo.get_by_prefix(prefix).await
+        .map_err(|e| e.to_string())?;
+
+    let service = match service
+    {
+        Some(s) => s,
+        None =>
         {
-            error!("Сервис с префиксом `{}` не найден в конфигурации", prefix);
-            Err("Сервис не найден".to_owned())
+            error!("Сервис с префиксом `{}` не найден в БД", prefix);
+            return Err("Сервис не найден".to_owned());
+        }
+    };
+
+    let user_access = match user.access.iter().find(|a| a.service_name == service.service_name)
+    {
+        Some(a) => a,
+        None =>
+        {
+            error!("Пользователь `{}` не имеет доступа к сервису `{}`", user.username, service.service_name);
+            return Err("Пользователь не имеет доступа к этому сервису".to_owned());
+        }
+    };
+
+    for required in &service.permissions
+    {
+        if user_access.permissions.contains(required)
+        {
+            return Ok(());
         }
     }
-    else
-    {
-        error!("Не указан префикс сервиса в URL `{}`", path);
-        Err("Не указан префикс сервиса".to_owned())
-    }
+
+    error!("Пользователь `{}` не имеет нужных прав для сервиса `{}`", user.username, service.service_name);
+    Err("Недостаточно прав для доступа к сервису".to_owned())
 }
 
 fn error_response<T: ToString>(body: T) -> Response<axum::body::Body>
@@ -208,6 +230,66 @@ fn access_denied_response(err: String) -> Response<axum::body::Body>
     
 }
 
+
+/// Извлекает гостевой токен из заголовка `X-Key` (приоритет) или из cookie `guest_token`.
+fn extract_guest_token(headers: &HeaderMap) -> Option<String>
+{
+    if let Some(v) = headers.get("X-Key").and_then(|v| v.to_str().ok())
+    {
+        return Some(v.to_owned());
+    }
+    // Fallback: cookie guest_token (browser navigation)
+    let cookie_header = headers.get("cookie")?.to_str().ok()?;
+    for part in cookie_header.split(';')
+    {
+        if let Ok(c) = Cookie::parse(part.trim().to_owned())
+        {
+            if c.name() == "guest_token"
+            {
+                return Some(c.value().to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// Проверяет гостевой JWT.
+/// Возвращает `Ok(())` если токен валиден и сервис разрешает гостевой доступ.
+async fn guest_checker(
+    token_str: &str,
+    uri: &Uri,
+    state: Arc<AppState>,
+) -> Result<(), Response<Body>>
+{
+    let claims = state.jwt_service.validate(token_str).await
+        .map_err(|e| error_response(e))?;
+
+    if claims.user_id() != "guest"
+    {
+        return Err(error_response("Токен не является гостевым"));
+    }
+
+    // Проверяем что сервис разрешает гостевой доступ
+    let prefix = uri.path()
+        .split('/')
+        .find(|s| !s.is_empty())
+        .ok_or_else(|| error_response("Не указан префикс сервиса"))?;
+
+    let service = state.services_repository.get_by_prefix(prefix).await
+        .map_err(|e| error_response(e))?
+        .ok_or_else(|| error_response("Сервис не найден"))?;
+
+    if !service.allow_guests
+    {
+        error!("Сервис `{}` не разрешает гостевой доступ", service.service_name);
+        return Err(ServerErrorResponse::new(
+            StatusCode::FORBIDDEN,
+            "Сервис не разрешает гостевой доступ".to_owned(),
+        ).into_response());
+    }
+
+    Ok(())
+}
 
 async fn bearer_checker(headers: &HeaderMap, state: Arc<AppState>) -> Result<User, Response<Body>>
 {

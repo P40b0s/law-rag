@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axum::body::Body;
 use axum::extract::State;
@@ -8,7 +8,7 @@ use axum::response::IntoResponse;
 use tracing::{debug, error};
 
 use crate::state::AppState;
-use crate::user_extension::UserExtension;
+use crate::api::extensions::UserExtension;
 
 /// Универсальный прокси-обработчик.
 ///
@@ -42,14 +42,19 @@ pub async fn proxy_handler(
         .unwrap_or("/");
     let rest = if rest.is_empty() { "/" } else { rest };
 
-    // Находим сервис по prefix
-    let service = match state.configuration.get_service_by_prefix(prefix)
+    // Находим сервис по prefix (из БД)
+    let service = match state.services_repository.get_by_prefix(prefix).await
     {
-        Some(s) => s,
-        None =>
+        Ok(Some(s)) => s,
+        Ok(None) =>
         {
-            error!("Сервис с префиксом `{}` не найден", prefix);
+            error!("Сервис с префиксом `{}` не найден в БД", prefix);
             return (StatusCode::NOT_FOUND, "Сервис не найден").into_response();
+        }
+        Err(e) =>
+        {
+            error!("Ошибка запроса сервиса `{}`: {}", prefix, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Ошибка базы данных").into_response();
         }
     };
 
@@ -59,12 +64,14 @@ pub async fn proxy_handler(
         return (StatusCode::BAD_GATEWAY, "Нет доступных адресов сервиса").into_response();
     }
 
-    // Round-robin выбор target
-    let idx = state
-        .counters
-        .get(prefix)
-        .map(|c| c.fetch_add(1, Ordering::Relaxed) % service.targets.len())
-        .unwrap_or(0);
+    // Round-robin: счётчик создаётся лениво при первом обращении
+    let idx =
+    {
+        let mut map = state.counters.lock().unwrap();
+        let counter = map.entry(prefix.to_string())
+            .or_insert_with(|| Arc::new(AtomicUsize::new(0)));
+        counter.fetch_add(1, Ordering::Relaxed) % service.targets.len()
+    };
     let target = service.targets[idx].trim_end_matches('/');
 
     // Собираем итоговый URL

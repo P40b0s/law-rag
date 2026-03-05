@@ -1,11 +1,10 @@
 mod api;
-mod middleware;
-mod user_extension;
 mod error;
 mod user;
 mod configuration;
 mod services;
 mod logger;
+mod pow;
 mod state;
 
 use std::sync::Arc;
