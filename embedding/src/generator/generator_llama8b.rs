@@ -226,6 +226,10 @@ impl super::generator_trait::Generator for GeneratorLlama8b
     {
         &self.system_prompt
     }
+     fn external_url(&self) -> Option<&str> 
+    {
+        None
+    }
 
     fn prompt<'a, C: ToString + AsRef<str>>(&'a mut self, query: &'a str, context: &'a[C], sender: tokio::sync::mpsc::UnboundedSender<String>)
      -> anyhow::Result<()>

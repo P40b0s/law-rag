@@ -1,7 +1,9 @@
+use std::str::FromStr;
+
 use rag_core::{Chunk, Encoder, ServiceStatus};
 use systema_client::{DocumentTree, TreeNode};
 use tokio::sync::mpsc::UnboundedSender;
-
+use anyhow::anyhow;
 use crate::{chunker::Chunker, simple_chunker::split_node_text};
 
 /// Чанкер на основе `DocumentTree`.
@@ -78,10 +80,9 @@ impl Chunker for SystemaActualChunker
                     links_hashes: node.links.clone(),
                     content: chunk_content,
                 });
-
-                let _ = sender.send(ServiceStatus::process_chunk(hash, chunk_num, self.0.node_count()));
-                chunk_num += 1;
             }
+            let _ = sender.send(ServiceStatus::process_chunk(hash, chunk_num, self.0.node_count()));
+            chunk_num += 1;
         }
 
         Ok(chunks)
@@ -114,6 +115,38 @@ fn context_prefix_from_ancestors(ancestors: &[&TreeNode]) -> Option<String>
         }
     }
     None
+}
+
+
+
+pub struct ChunkPath
+{
+    pub path_type: PathType,
+    pub level: u8,
+    pub number: String
+}
+
+pub enum PathType
+{
+    Article,
+    Part,
+    Item,
+    Subitem
+}
+impl FromStr for PathType
+{
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> 
+    {
+        match s.to_lowercase().as_str()
+        {
+            "статья" => Ok(Self::Article),
+            "часть" => Ok(Self::Part),
+            "пункт" => Ok(Self::Item),
+            "подпункт" => Ok(Self::Subitem),
+            _ => Err(anyhow!("неизвестный тип пути: {}", s))
+        }
+    }
 }
 
 #[cfg(test)]

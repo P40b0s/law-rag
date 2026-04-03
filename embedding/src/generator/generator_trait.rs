@@ -90,6 +90,8 @@ where Self: Sized
 
     /// Get system prompt
     fn get_system_prompt(&self) -> &str;
+    /// Get external generator url if exists, otherwise None
+    fn external_url(&self) -> Option<&str>;
 
     /// Generate response for query with context
     fn prompt<'a, C: ToString  + AsRef<str>>(

@@ -9,7 +9,8 @@ pub enum ModelName
     BgeRerankerV2M3,
     Llama1b,
     Llama8b,
-    Qwen32b
+    Qwen32b,
+    Qwen3_9b
 }
 
 impl AsRef<str> for ModelName
@@ -22,7 +23,8 @@ impl AsRef<str> for ModelName
             ModelName::BgeRerankerV2M3 => "BAAI/bge-reranker-v2-m3",
             ModelName::Llama1b => "meta-llama/Llama-3.2-1B-Instruct" ,
             ModelName::Llama8b => "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
-            ModelName::Qwen32b =>  "Qwen/Qwen2.5-32B-Instruct"
+            ModelName::Qwen32b =>  "Qwen/Qwen2.5-32B-Instruct",
+            ModelName::Qwen3_9b => "Qwen/Qwen3.5-9B"
         }
     }
 }
@@ -46,6 +48,7 @@ impl FromStr for ModelName
             "Qwen/Qwen2.5-32B-Instruct" => Ok(ModelName::Qwen32b),
             "BAAI/bge-reranker-v2-m3" => Ok(ModelName::BgeRerankerV2M3),
             "BAAI/bge-m3" => Ok(ModelName::BgeM3),
+            "Qwen/Qwen3.5-9B" => Ok(ModelName::Qwen3_9b),
             _ => Err(anyhow!("Модель {} не определена в конфигурационном файле", s))
         }
     }    
@@ -68,9 +71,13 @@ impl ModelName
     {
         Self::Llama8b
     }
-    pub fn generator_external() -> Self
+    pub fn generator_external_qwen32b() -> Self
     {
         Self::Qwen32b
+    }
+    pub fn generator_external_qwen3_9b() -> Self
+    {
+        Self::Qwen3_9b
     }
 }
 
@@ -185,9 +192,6 @@ pub struct EmbeddingConfiguration
     /// Температура генератора
     #[serde(default = "default_generator_temperature")]
     pub generator_temperature: f64,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub extended_generator_url: Option<String>
-
 }
 
 impl EmbeddingConfiguration
@@ -260,6 +264,11 @@ fn default_generators() -> Vec<GeneratorConfig>
             tokenizer_path: PathBuf::from("/home/phobos/projects/rust/law-rag/model/generator/llama3/tokenizer.json"),
             dimension:      None,
         }),
+        GeneratorConfig::External 
+        { 
+            name: ModelName::Qwen3_9b, 
+            base_url: "http://10.0.0.2:8000".to_owned()
+        }
     ]
 }
 
@@ -269,13 +278,13 @@ fn default_min_reranking_score()  -> f32   { 0.7 }
 
 fn default_system_prompt() -> String
 {
-    "Ты - высококвалифицированный юрист, который специализируется на российском законодательстве. \
-     Ты помогаешь людям находить ответы на их вопросы, используя свои обширные знания законов и \
-     нормативных актов. Ты всегда предоставляешь точные и подробные ответы, ссылаясь на конкретные \
-     статьи и пункты законодательства. Ты также можешь объяснять сложные юридические концепции \
-     простым языком, чтобы помочь людям лучше понять их права и обязанности. Твоя цель - помочь \
-     людям разобраться в их юридических вопросах и предоставить им полезную информацию. В конце \
-     добавь ссылки на документы откуда ты взял информацию, а так же полный путь откуда взята \
+    "Ты - высококвалифицированный юрист, который специализируется на российском законодательстве. 
+     Ты помогаешь людям находить ответы на их вопросы, используя свои обширные знания законов и 
+     нормативных актов. Ты всегда предоставляешь точные и подробные ответы, ссылаясь на конкретные 
+     статьи и пункты законодательства. Ты также можешь объяснять сложные юридические концепции 
+     простым языком, чтобы помочь людям лучше понять их права и обязанности. Твоя цель - помочь 
+     людям разобраться в их юридических вопросах и предоставить им полезную информацию. В конце 
+     добавь ссылки на документы откуда ты взял информацию, а так же полный путь откуда взята 
      информация (пнкт подпункт статья итд.) Ответ выдавай в markdown формате".to_owned()
 }
 
@@ -292,7 +301,6 @@ impl Default for EmbeddingConfiguration
             min_reranking_score:  default_min_reranking_score(),
             system_prompt:        default_system_prompt(),
             generator_temperature:default_generator_temperature(),
-            extended_generator_url: None
         }
     }
 }

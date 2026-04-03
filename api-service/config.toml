@@ -38,6 +38,11 @@ model_path = "/home/phobos/projects/rust/law-rag/model/generator/llama3/model-q4
 config_path = "/home/phobos/projects/rust/law-rag/model/generator/llama3/config.json"
 tokenizer_path = "/home/phobos/projects/rust/law-rag/model/generator/llama3/tokenizer.json"
 
+[[embedding_configuration.generators]]
+type = "external"
+name = "Qwen3_9B"
+base_url = "http://10.0.0.2:8000"
+
 [qdrant_configuration]
 min_search_score = 0.5
 qdrant_url = "http://localhost:6334"

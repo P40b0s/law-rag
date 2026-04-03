@@ -589,6 +589,7 @@ mod tests
     use std::time::Instant;
 
     use rand::Rng;
+    use rand::RngExt;
 
     use crate::{document::{DocumentNode, DocumentNodes}, logger};
 

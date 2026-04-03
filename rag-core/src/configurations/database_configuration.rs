@@ -20,7 +20,7 @@ fn min_search_score() -> f32
 
 fn qdrant_url() -> String
 {
-    "http://localhost:6334".to_owned()
+    "http://127.0.0.1:6334".to_owned()
 }
 
 fn distance() -> String

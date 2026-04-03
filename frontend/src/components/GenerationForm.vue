@@ -128,8 +128,8 @@ const generatedText = ref('')
 
 const formData = ref({
   query: '',
-  limit: 10,
-  reranker_limit: 5
+  limit: 20,
+  reranker_limit: 10
 })
 
 // Form rules
@@ -265,7 +265,7 @@ onUnmounted(() => {
 
 .answer-container {
   width: inherit;
-  max-height: 600px;
+  max-height: 300px;
   overflow-y: auto;
   padding: 16px;
   background-color: #f5f5f5;

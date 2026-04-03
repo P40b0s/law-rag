@@ -5,7 +5,6 @@ use figment::{Figment, providers::{Env, Format, Toml}};
 use rag_core::{EmbeddingConfiguration, QdrantConfiguration};
 use tracing::info;
 use serde::{Deserialize, Serialize};
-use crate::services::get_local_ip;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Configuration
@@ -44,20 +43,19 @@ impl Configuration
             .merge(Toml::file("/config/config.toml"))
             .merge(Env::prefixed("RAG_"))
             .extract::<Self>()
-            .and_then(|c| Ok(c.add_origin()))
             .context("Ошибка инициализации настроек программы")
     }
 
-    pub fn add_origin(mut self) -> Self
-    {
-        if let Some(addr) = get_local_ip()
-        {
-            let addr = format!("http://{}:{}", addr.to_string(), self.server_port);
-            info!("frontend started on addresse: {}", &addr);
-            self.origins.push(addr);
-        }
-        self
-    }
+    // pub fn add_origin(mut self) -> Self
+    // {
+    //     if let Some(addr) = get_local_ip()
+    //     {
+    //         let addr = format!("http://{}:{}", addr.to_string(), self.server_port);
+    //         info!("frontend started on addresse: {}", &addr);
+    //         self.origins.push(addr);
+    //     }
+    //     self
+    // }
 }
 
 #[cfg(test)]

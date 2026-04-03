@@ -20,18 +20,24 @@ impl Generators
         {
             ModelName::Llama1b => Ok(Self::Llama1b(GeneratorLlama1b::load(cfg).await?)),
             ModelName::Llama8b => Ok(Self::Llama8b(GeneratorLlama8b::load(cfg).await?)),
-            ModelName::Qwen32b => 
+            ModelName::Qwen32b | ModelName::Qwen3_9b => 
             {
-                if let Some(url) = cfg.extended_generator_url.as_ref()
+                let generator = cfg.find_generator(&model_name);
+                if let Err(e) = generator.as_ref()
                 {
-                    let config = ExtendedGeneratorConfig::new(model_name, url, cfg.generator_temperature);
-                    Ok(Self::Extended(ExtendedGenerator::new(config)))
+                    Err(anyhow!("Ошибка при загрузки конфигурации генератора {}: {}", model_name, e))
                 }
-                else
+                else 
                 {
-                    Err(anyhow!("Не указан адрес сервера генератора"))
+                    if let GeneratorConfig::External { name, base_url } = generator.unwrap()
+                    {
+                        Ok(Self::Extended(ExtendedGenerator::new(ExtendedGeneratorConfig::new(name.clone(), base_url, &cfg.system_prompt, cfg.generator_temperature))))
+                    }
+                    else 
+                    {
+                        Err(anyhow!("Ошибка при загрузки конфигурации генератора {}", model_name))
+                    }
                 }
-               
             },
             _ => Err(anyhow!("Указанная модель {} не предназначена для генерации контента", model_name))
         }
@@ -99,6 +105,14 @@ impl Generator for Generators
             Self::Llama1b(g) => g.get_system_prompt(),
             Self::Llama8b(g) => g.get_system_prompt(),
             Self::Extended(g) => g.get_system_prompt(),
+        }
+    }
+    fn external_url(&self) -> Option<&str> 
+    {
+        match self 
+        {
+            Self::Extended(g) => Some(g.url()),
+            _ => None,
         }
     }
 

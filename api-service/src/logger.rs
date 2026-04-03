@@ -4,7 +4,7 @@ pub fn init() -> bool {
     let subscriber = tracing_subscriber::fmt()
         // .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| 
         // {
-        //     "law-rag=debug".into()
+        //     "api-service=debug".into()
         // }))
         .with_max_level(Level::DEBUG)
         .with_line_number(true)

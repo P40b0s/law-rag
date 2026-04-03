@@ -7,6 +7,7 @@ use rag_core::{Chunk, Embedder, EmbeddingConfiguration, QdrantConfiguration, Rer
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 use uuid::Uuid;
+use qdrant_client::config::QdrantConfig;
 use qdrant_client::qdrant::{
     Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, FieldCondition, FieldType, Filter, PointId, PointStruct, ScrollPointsBuilder, ScoredPoint, SearchPoints, SearchPointsBuilder, UpdateStatus, UpsertPointsBuilder, Value, WithPayloadSelector
 };
@@ -119,9 +120,7 @@ impl QdrantManager
 {
     pub  fn new(qdrant_config: Arc<QdrantConfiguration>, embedding_config: Arc<EmbeddingConfiguration>) -> Result<Self> 
     {
-        let client = Qdrant::from_url(&qdrant_config.qdrant_url)
-            .build()?;
-            
+        let client = QdrantConfig::from_url(&qdrant_config.qdrant_url).connect_timeout(std::time::Duration::from_secs(5)).build()?;
         Ok(Self 
         {
             client,
@@ -946,26 +945,28 @@ impl SearchResult
         }
     }
 }
-//TODO сделать вывод даты как строки для контекста!
-impl ToString for SearchResult
+
+impl ToString for SearchResult 
 {
     fn to_string(&self) -> String 
     {
-        format!
-        (
-            "адрес документа: {}\n
-            номер документа: {}\n
-            дата подписания: {}\n
-            наименование документа: {}\n
-            путь к чанку: {}\n
-            текст чанки: {}\n
-            ---------------\n",
-            &self.payload.document_uri,
-            &self.payload.document_number,
-            &self.payload.sign_date_as_str(),
-            &self.payload.document_title,
-            &self.payload.path,
-            &self.payload.text
+        format!(
+        "[DOC id={}]
+        title: {}
+        date: {}
+        number: {}
+        uri: {}
+        path: {}
+        
+        text: {}
+        [/DOC]\n\n",
+            self.payload.document_hash,
+            self.payload.document_title,
+            self.payload.sign_date_as_str(),
+            self.payload.document_number,
+            self.payload.document_uri,
+            self.payload.path,
+            self.payload.text
         )
     }
 }

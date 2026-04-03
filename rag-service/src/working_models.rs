@@ -23,7 +23,7 @@ impl WorkingModels
         emb_cfg: Arc<EmbeddingConfiguration>,
     ) -> Result<Self, Error>
     {
-        let generator = GeneratorImpl::load(Arc::clone(&emb_cfg), ModelName::Llama1b).await
+        let generator = GeneratorImpl::load(Arc::clone(&emb_cfg), ModelName::Qwen3_9b).await
             .inspect_err(|e| error!("Error when loading generator `{}`", e))
             .map_err(|e| Error::ModelLoadError { model: "generator".to_owned(), source: e })?;
         let retriver = RetriverImpl::new(Arc::clone(&emb_cfg)).await

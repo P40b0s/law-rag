@@ -2,6 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use futures::StreamExt;
 use rag_core::ModelName;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{info, warn};
 use crate::generator::Generator;
@@ -29,17 +30,27 @@ pub struct ExtendedGeneratorConfig
     /// Штраф за повторения
     #[serde(default = "default_repeat_penalty")]
     pub repeat_penalty: f32,
+    #[serde(default = "default_system_prompt")]
+    pub system_prompt: String,
 }
 
-fn default_model() -> ModelName { ModelName::Qwen32b }
+fn default_model() -> ModelName { ModelName::Qwen3_9b }
 fn default_top_p() -> f64 { 0.9 }
 fn default_top_k() -> usize { 30 }
 fn default_max_tokens() -> usize { 1000 }
 fn default_repeat_penalty() -> f32 { 1.1 }
+fn default_system_prompt() -> String
+{
+    "Ты - ассистент RAG системы, ты должен отвечать на вопросы пользователей \
+    используя ТОЛЬКО предоставленный контекст для формирования ответа. Начало ответа \
+    должно звучать так: `На основе имеющейся у меня информации: {далее идет твой ответ}`. \
+    Если в контексте нет информации, скажи: \"Не могу ответить на основе имеющейся информации\""
+        .to_owned()
+}
 
 impl ExtendedGeneratorConfig
 {
-    pub fn new(model: ModelName, base_url: &str, temperature: f64) -> Self
+    pub fn new(model: ModelName, base_url: &str, system_prompt: &str, temperature: f64) -> Self
     {
         Self
         {
@@ -49,6 +60,7 @@ impl ExtendedGeneratorConfig
             top_p: default_top_p(),
             top_k: default_top_k(),
             max_tokens: default_max_tokens(),
+            system_prompt: system_prompt.to_owned(),
             repeat_penalty: default_repeat_penalty(),
         }
     }
@@ -59,7 +71,7 @@ impl ExtendedGeneratorConfig
 #[derive(Serialize)]
 struct ChatCompletionRequest
 {
-    model: ModelName,
+    model: String,
     messages: Vec<ChatMessage>,
     temperature: f64,
     top_p: f64,
@@ -109,7 +121,6 @@ pub struct ExtendedGenerator
 {
     client: reqwest::Client,
     config: ExtendedGeneratorConfig,
-    system_prompt: String,
     is_connected: bool,
 }
 
@@ -126,24 +137,23 @@ impl ExtendedGenerator
         {
             client,
             config,
-            system_prompt: "Ты - ассистент RAG системы, ты должен отвечать на вопросы пользователей \
-                используя ТОЛЬКО предоставленный контекст для формирования ответа. Начало ответа \
-                должно звучать так: `На основе имеющейся у меня информации: {далее идет твой ответ}`. \
-                Если в контексте нет информации, скажи: \"Не могу ответить на основе имеющейся информации\""
-                .to_owned(),
             is_connected: false,
         }
+    }
+    pub fn url(&self) -> &str
+    {
+        &self.config.base_url
     }
 
     pub fn with_system_prompt(mut self, prompt: String) -> Self
     {
-        self.system_prompt = prompt;
+        self.config.system_prompt = prompt;
         self
     }
 
     pub fn get_system_prompt(&self) -> &str
     {
-        &self.system_prompt
+        &self.config.system_prompt
     }
 
     /// Проверяет доступность сервера
@@ -185,13 +195,13 @@ impl ExtendedGenerator
         let user_message = format!("Контекст:\n{}\n\nВопрос: {}", context_text, query);
 
         let messages = vec![
-            ChatMessage { role: "system".to_owned(), content: self.system_prompt.clone() },
+            ChatMessage { role: "system".to_owned(), content: self.config.system_prompt.clone() },
             ChatMessage { role: "user".to_owned(), content: user_message },
         ];
 
         let request_body = ChatCompletionRequest
         {
-            model: self.config.model.clone(),
+            model: self.config.model.as_ref().to_owned(),
             messages,
             temperature: self.config.temperature,
             top_p: self.config.top_p,
@@ -280,6 +290,8 @@ impl ExtendedGenerator
                                 {
                                     info!("Генерация завершена (finish_reason): {} токенов за {:?}",
                                         token_count, start.elapsed());
+                                        let _ = sender.send("[END]".to_owned())
+                                            .map_err(|e| anyhow!("Ошибка отправки токена: {}", e))?;
                                     return Ok(());
                                 }
                             }
@@ -360,7 +372,11 @@ impl Generator for ExtendedGenerator
 
     fn get_system_prompt(&self) -> &str
     {
-        &self.system_prompt
+        &self.config.system_prompt
+    }
+    fn external_url(&self) -> Option<&str> 
+    {
+        Some(self.url())
     }
 
     /// Блокирующий мост к async prompt.

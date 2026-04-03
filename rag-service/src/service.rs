@@ -51,7 +51,7 @@ impl Service
         let generator_size = gen_lock.get_size_in_bytes();
         let system_prompt = gen_lock.get_system_prompt().to_owned();
         let temperature = self.emb_conf.generator_temperature;
-        let uri = self.emb_conf.extended_generator_url.clone();
+        let uri = gen_lock.external_url().map(|s| s.to_owned());
         drop(gen_lock);
         if generator
         {
@@ -191,53 +191,43 @@ impl Service
         let collection_names: Vec<String> = collection_names.iter().map(|s| s.to_string()).collect();
         let service = Arc::clone(&self);
         let handle = tokio::runtime::Handle::current();
+        let retriver = service.models.get_retriver().await;
+        let reranker = service.models.get_reranker().await;
 
-        let result = std::thread::spawn(move ||
+        // Эмбеддинг запроса генерируем один раз для всех коллекций.
+        let query_embeddings = retriver.generate_embeddings(&query).await
+        //почему reranker error? переделать
+            .map_err(|e| Error::EmbeddingsError { source: embedding::Error::RerankerError { source: e } })
+            .inspect_err(|e| error!("Embeddings error: {}", e))?;
+
+        // Сырые результаты из всех коллекций (без реранкинга).
+        let mut raw: Vec<SearchResult> = Vec::new();
+        for collection_name in &collection_names
         {
-            handle.block_on(async move
+            match self.qdrant_manager.vector_search_raw(query_embeddings.clone(), collection_name, per_collection, None).await
             {
-                let retriver = service.models.get_retriver().await;
-                let reranker = service.models.get_reranker().await;
-
-                // Эмбеддинг запроса генерируем один раз для всех коллекций.
-                let query_embeddings = retriver.generate_embeddings(&query).await
-                    .map_err(|e| Error::EmbeddingsError { source: embedding::Error::RerankerError { source: e } })
-                    .inspect_err(|e| error!("Embeddings error: {}", e))?;
-
-                // Сырые результаты из всех коллекций (без реранкинга).
-                let mut raw: Vec<SearchResult> = Vec::new();
-                for collection_name in &collection_names
+                Ok(mut results) =>
                 {
-                    match self.qdrant_manager.vector_search_raw(query_embeddings.clone(), collection_name, per_collection, None).await
-                    {
-                        Ok(mut results) =>
-                        {
-                            info!("Collection '{}': {} raw hits (per_collection_limit={})",
-                                collection_name, results.len(), per_collection);
-                            raw.append(&mut results);
-                        }
-                        Err(e) => warn!("Search error in '{}': {}", collection_name, e),
-                    }
+                    info!("Collection '{}': {} raw hits (per_collection_limit={})",
+                        collection_name, results.len(), per_collection);
+                    raw.append(&mut results);
                 }
-
-                info!("Total raw candidates: {} from {} collections → reranking to top {}",
-                    raw.len(), collection_names.len(), final_limit);
-
-                // Один общий реранкинг — возвращает топ final_limit.
-                let reranked = reranker.rerank(&query, raw, final_limit).await
-                    .map_err(|e| Error::ModelError { source: e })?;
-
-                Ok(reranked)
-            })
-        }).join();
-
-        match result
-        {
-            Ok(Ok(res)) => Ok(res),
-            Ok(Err(e)) => Err(e),
-            Err(e) => Err(Error::ThreadError(anyhow!("Thread panicked: {:?}", e))),
+                Err(e) => warn!("Search error in '{}': {}", collection_name, e),
+            }
         }
+
+        info!("Total raw candidates: {} from {} collections → reranking to top {}",
+            raw.len(), collection_names.len(), final_limit);
+
+        // Один общий реранкинг — возвращает топ final_limit.
+        let reranked = reranker.rerank(&query, raw, final_limit).await
+            .map_err(|e| Error::ModelError { source: e })?;
+
+        Ok(reranked)
     }
+
+
+
 
     /// Ранжирует коллекции по релевантности к запросу пользователя
     ///

@@ -214,6 +214,7 @@ pub async fn embedding_document(
 
 pub async fn generation_request(
     ConnectInfo(_): ConnectInfo<SocketAddr>,
+    //TODO сделать экстракотры проверки pow и capcha и в том числе добавить сами эти сервисы
     State(app_state): State<Arc<AppState>>,
     Json(query): Json<GenerationRequest>)
 -> Result<Response<Body>, Error>
